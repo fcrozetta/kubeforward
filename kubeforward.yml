@@ -1,0 +1,54 @@
+environments:
+  dev:
+    context: dev-cluster
+    namespaces:
+      platform:
+        forwards:
+          - kind: service
+            name: api-service
+            ports:
+              - localPort: 8080
+                remotePort: 80
+          - kind: deployment
+            name: web
+            ports:
+              - localPort: 3000
+                remotePort: 3000
+      data:
+        forwards:
+          - kind: service
+            name: neo4j
+            ports:
+              - localPort: 7474
+                remotePort: 7474
+              - localPort: 7687
+                remotePort: 7687
+  prod:
+    context: prod-cluster
+    namespaces:
+      platform:
+        forwards:
+          - kind: service
+            name: api-service
+            ports:
+              - localPort: 8081
+                remotePort: 80
+          - kind: deployment
+            name: web
+            ports:
+              - localPort: 3001
+                remotePort: 3000
+      data:
+        forwards:
+          - kind: pod
+            name: worker-0
+            ports:
+              - localPort: 9000
+                remotePort: 9000
+          - kind: service
+            name: neo4j
+            ports:
+              - localPort: 7475
+                remotePort: 7474
+              - localPort: 7688
+                remotePort: 7687
