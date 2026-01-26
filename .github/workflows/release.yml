@@ -36,7 +36,7 @@ jobs:
           mkdir -p dist
           OUTPUT="kubeforward-${{ matrix.goos }}-${{ matrix.goarch }}${EXT}"
           GOOS="${{ matrix.goos }}" GOARCH="${{ matrix.goarch }}" CGO_ENABLED=0 \
-            go build -trimpath -ldflags="-s -w -X main.version=${GITHUB_REF_NAME}" -o "dist/${OUTPUT}" ./cmd/kubeforward
+            go build -trimpath -ldflags="-s -w -X kubeforward/cmd/kubeforward.version=${GITHUB_REF_NAME}" -o "dist/${OUTPUT}" ./cmd/kubeforward
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
