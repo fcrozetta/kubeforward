@@ -4,9 +4,12 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"runtime/debug"
 )
 
-var version = "0.0.0"
+const defaultVersion = "0.0.0"
+
+var version = defaultVersion
 
 type forwardRequest struct {
 	configPath string
@@ -27,7 +30,7 @@ func parseArgs() forwardRequest {
 	_ = fs.Parse(os.Args[1:])
 
 	if *showVersion {
-		fmt.Fprintln(fs.Output(), version)
+		fmt.Fprintln(fs.Output(), resolvedVersion())
 		os.Exit(0)
 	}
 
@@ -40,6 +43,19 @@ func parseArgs() forwardRequest {
 	return forwardRequest{
 		configPath: *configPath,
 	}
+}
+
+func resolvedVersion() string {
+	if version != defaultVersion {
+		return version
+	}
+
+	info, ok := debug.ReadBuildInfo()
+	if !ok || info.Main.Version == "" || info.Main.Version == "(devel)" {
+		return defaultVersion
+	}
+
+	return info.Main.Version
 }
 
 func main() {
