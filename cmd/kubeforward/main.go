@@ -9,24 +9,17 @@ import (
 const version = "0.1.0"
 
 type forwardRequest struct {
-	service    string
-	namespace  string
-	localPort  int
-	remotePort int
-	context    string
+	configPath string
 }
 
 func parseArgs() forwardRequest {
 	fs := flag.NewFlagSet(os.Args[0], flag.ExitOnError)
-	namespace := fs.String("namespace", "default", "Namespace containing the service")
-	localPort := fs.Int("local-port", 8080, "Local port to bind")
-	remotePort := fs.Int("remote-port", 80, "Target service port")
-	context := fs.String("context", "", "Optional kubeconfig context to use")
+	configPath := fs.String("f", "kubeforward.yml", "Path to configuration file")
 	showVersion := fs.Bool("version", false, "Print version and exit")
 
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "kubeforward - forward a Kubernetes service to a local port.\n\n")
-		fmt.Fprintf(fs.Output(), "Usage:\n  kubeforward [flags] <service>\n\n")
+		fmt.Fprintf(fs.Output(), "kubeforward - forward Kubernetes resources based on a config file.\n\n")
+		fmt.Fprintf(fs.Output(), "Usage:\n  kubeforward [flags]\n\n")
 		fmt.Fprintf(fs.Output(), "Flags:\n")
 		fs.PrintDefaults()
 	}
@@ -38,35 +31,24 @@ func parseArgs() forwardRequest {
 		os.Exit(0)
 	}
 
-	args := fs.Args()
-	if len(args) == 0 {
-		fmt.Fprintln(fs.Output(), "error: service name is required")
+	if len(fs.Args()) > 0 {
+		fmt.Fprintln(fs.Output(), "error: unexpected arguments")
 		fs.Usage()
 		os.Exit(2)
 	}
 
 	return forwardRequest{
-		service:    args[0],
-		namespace:  *namespace,
-		localPort:  *localPort,
-		remotePort: *remotePort,
-		context:    *context,
+		configPath: *configPath,
 	}
 }
 
 func main() {
 	request := parseArgs()
-	contextFragment := ""
-	if request.context != "" {
-		contextFragment = fmt.Sprintf(" (context: %s)", request.context)
+	configData, err := os.ReadFile(request.configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: unable to read config %q: %v\n", request.configPath, err)
+		os.Exit(1)
 	}
 
-	fmt.Printf(
-		"Starting forward: %s in %s %d:%d%s\n",
-		request.service,
-		request.namespace,
-		request.localPort,
-		request.remotePort,
-		contextFragment,
-	)
+	fmt.Printf("Loaded config from %s (%d bytes)\n", request.configPath, len(configData))
 }
