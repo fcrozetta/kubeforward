@@ -17,8 +17,9 @@ This repository uses `vcpkg.json` with a pinned `builtin-baseline` to keep depen
 ### Using Make (recommended)
 
 ```bash
-VCPKG_ROOT=/path/to/vcpkg make build
-VCPKG_ROOT=/path/to/vcpkg make build BUILD_TYPE=Release
+export VCPKG_ROOT=/path/to/vcpkg
+make build
+make build BUILD_TYPE=Release
 ```
 
 ### Using CMake directly
