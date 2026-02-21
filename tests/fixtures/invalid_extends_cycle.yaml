@@ -1,0 +1,9 @@
+version: 1
+metadata:
+  project: cycle
+environments:
+  a:
+    extends: b
+  b:
+    extends: a
+

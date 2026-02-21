@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cctype>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <optional>
 #include <set>
@@ -65,30 +66,9 @@ bool LooksLikeIPv4Literal(const std::string& value) {
   return dots == 3 && segments == 4;
 }
 
-bool LooksLikeIPv6Literal(const std::string& value) {
-  bool has_colon = false;
-  for (size_t i = 0; i < value.size(); ++i) {
-    const char ch = value[i];
-    if (ch == ':') {
-      has_colon = true;
-      continue;
-    }
-    if (ch == '.') {
-      const auto pos = value.find_last_of(':');
-      if (pos == std::string::npos) {
-        return false;
-      }
-      return LooksLikeIPv4Literal(value.substr(pos + 1));
-    }
-    if (!std::isxdigit(static_cast<unsigned char>(ch))) {
-      return false;
-    }
-  }
-  return has_colon;
-}
-
 bool IsIpLiteral(const std::string& value) {
-  return LooksLikeIPv4Literal(value) || LooksLikeIPv6Literal(value);
+  // TODO(>=1.0.0): Re-introduce IPv6 using strict parsing rules.
+  return LooksLikeIPv4Literal(value);
 }
 
 bool IsPortValid(int value) { return value >= 1 && value <= 65535; }
@@ -314,7 +294,7 @@ TargetDefaults ParseTargetDefaults(const YAML::Node& node, const std::string& co
   }
   if (const auto bind = ReadOptionalString(node["bindAddress"], context + ".bindAddress", errors)) {
     if (!bind->empty() && !IsIpLiteral(*bind)) {
-      AddError(errors, context + ".bindAddress", "must be an IPv4/IPv6 literal");
+      AddError(errors, context + ".bindAddress", "must be an IPv4 literal");
     } else {
       defaults.bind_address = bind;
     }
@@ -409,7 +389,7 @@ PortMapping ParsePortMapping(const YAML::Node& node, const std::string& context,
   }
   if (const auto bind = ReadOptionalString(node["bindAddress"], context + ".bindAddress", errors)) {
     if (!bind->empty() && !IsIpLiteral(*bind)) {
-      AddError(errors, context + ".bindAddress", "must be an IPv4/IPv6 literal");
+      AddError(errors, context + ".bindAddress", "must be an IPv4 literal");
     } else {
       mapping.bind_address = bind;
     }
@@ -552,7 +532,7 @@ void ValidateEnvironment(const EnvironmentDefinition& env, std::vector<ConfigLoa
         AddError(errors, port_context + ".remote", "remote port missing");
       }
       if (mapping.bind_address && !mapping.bind_address->empty() && !IsIpLiteral(*mapping.bind_address)) {
-        AddError(errors, port_context + ".bindAddress", "must be an IPv4/IPv6 literal");
+        AddError(errors, port_context + ".bindAddress", "must be an IPv4 literal");
       }
     }
     if (env.guards.allow_production && !forward.detach) {
@@ -601,6 +581,56 @@ void ValidateEnvironmentExtends(const Config& config, std::vector<ConfigLoadErro
     if (envs.count(*env.extends) == 0) {
       AddError(errors, "environments." + name + ".extends",
                "references unknown environment '" + *env.extends + "'");
+    }
+  }
+
+  enum class VisitState {
+    kUnvisited,
+    kVisiting,
+    kVisited,
+  };
+
+  std::map<std::string, VisitState> state;
+  std::vector<std::string> stack;
+
+  std::function<void(const std::string&)> visit = [&](const std::string& name) {
+    state[name] = VisitState::kVisiting;
+    stack.push_back(name);
+
+    const auto& env = envs.at(name);
+    if (env.extends && env.extends != name && envs.count(*env.extends) == 1) {
+      const std::string& parent = *env.extends;
+      const auto parent_it = state.find(parent);
+      const VisitState parent_state = parent_it == state.end() ? VisitState::kUnvisited : parent_it->second;
+
+      if (parent_state == VisitState::kVisiting) {
+        auto cycle_begin = std::find(stack.begin(), stack.end(), parent);
+        std::ostringstream cycle;
+        if (cycle_begin != stack.end()) {
+          for (auto it = cycle_begin; it != stack.end(); ++it) {
+            if (it != cycle_begin) {
+              cycle << " -> ";
+            }
+            cycle << *it;
+          }
+          cycle << " -> " << parent;
+        } else {
+          cycle << name << " -> " << parent;
+        }
+        AddError(errors, "environments." + name + ".extends", "cyclic environment inheritance: " + cycle.str());
+      } else if (parent_state == VisitState::kUnvisited) {
+        visit(parent);
+      }
+    }
+
+    stack.pop_back();
+    state[name] = VisitState::kVisited;
+  };
+
+  for (const auto& [name, _] : envs) {
+    const auto it = state.find(name);
+    if (it == state.end() || it->second == VisitState::kUnvisited) {
+      visit(name);
     }
   }
 }

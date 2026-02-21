@@ -15,7 +15,7 @@ defaults:
   kubeconfig: string?            # path relative to repo
   context: string?               # kubectl context name
   namespace: string?             # cluster namespace
-  bindAddress: string?           # default listen IP (default 127.0.0.1)
+  bindAddress: string?           # default listen IPv4 (default 127.0.0.1)
   labels: map<string,string>?    # labels applied to every forward plan
 environments:
   <name>:
@@ -35,7 +35,7 @@ environments:
         ports:
           - local: int (required, 1-65535)
             remote: int (required, 1-65535)
-            bindAddress: string?            # overrides env/default
+            bindAddress: string?            # overrides env/default (IPv4 literal)
             protocol: enum[tcp, udp] default tcp
         annotations:
           detach: bool default false
@@ -58,7 +58,7 @@ environments:
 - `name` uniqueness enforced within each environment and across entire file (global collisions block to prevent human confusion).
 - `resource.name` and `resource.selector` are mutually exclusive; at least one must be present.
 - `selector` maps must contain deterministic key ordering when serialized (CLI rewrites sorted order on `plan` output).
-- `bindAddress` must be IPv4 or IPv6 literal. Hostnames rejected to avoid implicit DNS dependencies.
+- `bindAddress` must be an IPv4 literal. Hostnames rejected to avoid implicit DNS dependencies.
 - Production environments (`guards.allowProduction=true`) require every forward to specify `annotations.detach=true` to enforce detached supervision.
 - `healthCheck.exec` commands are validated for absolute paths or repo-relative scripts; bare names rejected.
 
@@ -75,4 +75,3 @@ environments:
 ## Future Evolution Hooks
 - Reserved top-level key `extensions` (map<string,any>) for experimental modules; ignored unless `--enable-extension=<name>` flag provided.
 - `annotations` bucket is extensible; unknown annotations are merely surfaced in plan output, never enforced.
-

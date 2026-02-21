@@ -165,6 +165,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: kubeforward-macos-signed
+          # TODO(>=1.0.0): publish only checksums for signed release files.
           path: |
             dist/*.zip
             dist/*.sha256
@@ -175,6 +176,7 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
           generate_release_notes: true
+          # TODO(>=1.0.0): publish only checksums for signed release files.
           files: |
             dist/*.zip
             dist/*.sha256

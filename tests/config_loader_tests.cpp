@@ -82,3 +82,31 @@ TEST_CASE("config allows extends environments without local forwards", "[config]
   REQUIRE(child.extends.value() == "base");
   REQUIRE(child.forwards.empty());
 }
+
+TEST_CASE("config rejects cyclic environment extends", "[config]") {
+  const auto result = kubeforward::config::LoadConfigFromFile(Fixture("invalid_extends_cycle.yaml"));
+  REQUIRE_FALSE(result.ok());
+
+  bool saw_cycle_error = false;
+  for (const auto& error : result.errors) {
+    if (error.message.find("cyclic environment inheritance") != std::string::npos) {
+      saw_cycle_error = true;
+      break;
+    }
+  }
+  REQUIRE(saw_cycle_error);
+}
+
+TEST_CASE("config rejects non-ipv4 bindAddress literals", "[config]") {
+  const auto result = kubeforward::config::LoadConfigFromFile(Fixture("invalid_bind_ipv6.yaml"));
+  REQUIRE_FALSE(result.ok());
+
+  bool saw_bind_error = false;
+  for (const auto& error : result.errors) {
+    if (error.context == "defaults.bindAddress" && error.message == "must be an IPv4 literal") {
+      saw_bind_error = true;
+      break;
+    }
+  }
+  REQUIRE(saw_bind_error);
+}
