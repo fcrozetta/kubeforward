@@ -1,0 +1,64 @@
+name: Support request
+description: Ask for help with usage, behavior, or integration.
+title: "[support]: "
+labels:
+  - type:support
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this for usage help and troubleshooting. For confirmed defects, open a bug report instead.
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What are you trying to accomplish?
+    validations:
+      required: true
+  - type: textarea
+    id: attempted
+    attributes:
+      label: What you tried
+      description: Commands, config snippets, and sequence of actions.
+    validations:
+      required: true
+  - type: textarea
+    id: current_output
+    attributes:
+      label: Current output
+      description: Actual CLI output or error message.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected_output
+    attributes:
+      label: Expected output
+      description: What behavior did you expect?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Kubeforward version
+      description: Output of `kubeforward --version`.
+      placeholder: v0.1.0
+    validations:
+      required: true
+  - type: input
+    id: k8s_context
+    attributes:
+      label: Kubernetes context
+      description: Output of `kubectl config current-context`.
+      placeholder: my-cluster-dev
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: DTAPS target and runtime.
+      placeholder: dev on macOS 14
+    validations:
+      required: true
+

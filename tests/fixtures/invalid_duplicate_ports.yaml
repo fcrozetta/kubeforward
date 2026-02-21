@@ -1,0 +1,20 @@
+version: 1
+metadata:
+  project: invalid
+environments:
+  dev:
+    forwards:
+      - name: web
+        resource:
+          kind: service
+          name: web
+        ports:
+          - local: 8080
+            remote: 80
+      - name: api
+        resource:
+          kind: deployment
+          name: api
+        ports:
+          - local: 8080
+            remote: 9000

@@ -1,0 +1,19 @@
+last_updated: 2026-02-21T16:20:47Z
+claims:
+  - id: vcpkg-baseline
+    statement: "vcpkg manifest baseline is pinned to commit 81ded1ca9f81437a39dc520c653f3006953308f3."
+    source: "vcpkg.json"
+    validation:
+      type: command
+      command: "rg -n \"builtin-baseline\" vcpkg.json"
+      expected: "builtin-baseline\": \"81ded1ca9f81437a39dc520c653f3006953308f3\""
+    updated_at: 2026-02-21T16:20:47Z
+  - id: ai-dir-policy
+    statement: "All persistent AI memories/skills must be stored under .ai/ per repository policy."
+    source: "Developer directive 2026-02-18; agents.md policy"
+    validation:
+      type: doc-check
+      steps:
+        - "Verify agents.md contains the .ai policy section."
+        - "Confirm relevant .ai files exist (skills, claims, etc.)."
+    updated_at: 2026-02-21T16:20:47Z
