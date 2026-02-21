@@ -46,7 +46,7 @@ jobs:
           echo "VCPKG_ROOT=${VCPKG_ROOT}" >> "${GITHUB_ENV}"
 
       - name: Build (Release)
-        run: make clean && make build BUILD_TYPE=Release
+        run: make clean && make build BUILD_TYPE=Release BUILD_TARGET=kubeforward
 
       - name: Test (Release)
         run: make test BUILD_TYPE=Release

@@ -2,6 +2,8 @@ BUILD_TYPE ?= Debug
 BUILD_ROOT ?= build
 BUILD_DIR ?= $(BUILD_ROOT)/$(BUILD_TYPE)
 CMAKE_FLAGS ?=
+BUILD_TARGET ?=
+TEST_TARGET ?= kubeforward_tests
 
 ifeq ($(strip $(VCPKG_ROOT)),)
 $(error VCPKG_ROOT is not set. Export it (e.g. VCPKG_ROOT=/path/to/vcpkg) before running make)
@@ -16,9 +18,14 @@ configure:
 		$(CMAKE_FLAGS)
 
 build: configure
+ifeq ($(strip $(BUILD_TARGET)),)
 	cmake --build "$(BUILD_DIR)" --config "$(BUILD_TYPE)"
+else
+	cmake --build "$(BUILD_DIR)" --config "$(BUILD_TYPE)" --target "$(BUILD_TARGET)"
+endif
 
-test: build
+test: configure
+	cmake --build "$(BUILD_DIR)" --config "$(BUILD_TYPE)" --target "$(TEST_TARGET)"
 	ctest --test-dir "$(BUILD_DIR)" --output-on-failure
 
 clean:

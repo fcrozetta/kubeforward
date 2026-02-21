@@ -20,6 +20,7 @@ This repository uses `vcpkg.json` with a pinned `builtin-baseline` to keep depen
 export VCPKG_ROOT=/path/to/vcpkg
 make build
 make build BUILD_TYPE=Release
+make build BUILD_TYPE=Release BUILD_TARGET=kubeforward
 ```
 
 ### Using CMake directly
