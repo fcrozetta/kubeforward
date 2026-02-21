@@ -140,7 +140,12 @@ std::optional<bool> ReadOptionalBool(const YAML::Node& node, const std::string& 
     AddError(errors, context, "expected boolean");
     return std::nullopt;
   }
-  return node.as<bool>();
+  try {
+    return node.as<bool>();
+  } catch (const YAML::BadConversion&) {
+    AddError(errors, context, "expected boolean");
+    return std::nullopt;
+  }
 }
 
 std::optional<int> ReadOptionalInt(const YAML::Node& node, const std::string& context,
@@ -152,7 +157,12 @@ std::optional<int> ReadOptionalInt(const YAML::Node& node, const std::string& co
     AddError(errors, context, "expected integer");
     return std::nullopt;
   }
-  return node.as<int>();
+  try {
+    return node.as<int>();
+  } catch (const YAML::BadConversion&) {
+    AddError(errors, context, "expected integer");
+    return std::nullopt;
+  }
 }
 
 std::map<std::string, std::string> ParseStringMap(const YAML::Node& node, const std::string& context,
@@ -419,8 +429,6 @@ void ParseForwardAnnotations(const YAML::Node& node, const std::string& context,
     AddError(errors, context, "expected mapping");
     return;
   }
-  EnsureAllowedKeys(node, context, MakeSet(std::vector<std::string>{"detach", "restartPolicy", "healthCheck"}),
-                    errors);
   if (const auto detach = ReadOptionalBool(node["detach"], context + ".detach", errors)) {
     forward.detach = *detach;
   }
@@ -502,8 +510,11 @@ EnvironmentDefinition ParseEnvironment(const std::string& name, const YAML::Node
   env.guards = ParseEnvironmentGuards(node["guards"], context + ".guards", errors);
 
   const auto forwards = node["forwards"];
+  const bool has_parent = env.extends.has_value() && !env.extends->empty();
   if (!forwards) {
-    AddError(errors, context, "environment must define 'forwards'");
+    if (!has_parent) {
+      AddError(errors, context, "environment must define 'forwards'");
+    }
   } else if (!NodeIsSequence(forwards)) {
     AddError(errors, context + ".forwards", "expected list");
   } else {

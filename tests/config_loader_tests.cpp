@@ -47,3 +47,38 @@ TEST_CASE("config errors on missing file", "[config]") {
   REQUIRE_FALSE(result.ok());
   REQUIRE_FALSE(result.errors.empty());
 }
+
+TEST_CASE("config reports scalar conversion errors instead of crashing", "[config]") {
+  const auto result = kubeforward::config::LoadConfigFromFile(Fixture("invalid_scalar_int.yaml"));
+  REQUIRE_FALSE(result.ok());
+
+  bool saw_expected_integer = false;
+  for (const auto& error : result.errors) {
+    if (error.context == "environments.dev.forwards[0].ports[0].local" && error.message == "expected integer") {
+      saw_expected_integer = true;
+      break;
+    }
+  }
+  REQUIRE(saw_expected_integer);
+}
+
+TEST_CASE("config preserves unknown forward annotations", "[config]") {
+  const auto result = kubeforward::config::LoadConfigFromFile(Fixture("annotations_passthrough.yaml"));
+  REQUIRE(result.ok());
+  REQUIRE(result.config);
+
+  const auto& forward = result.config->environments.at("dev").forwards.at(0);
+  REQUIRE(forward.annotations.count("customPolicy") == 1);
+  REQUIRE(forward.annotations.count("owner") == 1);
+}
+
+TEST_CASE("config allows extends environments without local forwards", "[config]") {
+  const auto result = kubeforward::config::LoadConfigFromFile(Fixture("extends_without_forwards.yaml"));
+  REQUIRE(result.ok());
+  REQUIRE(result.config);
+
+  const auto& child = result.config->environments.at("child");
+  REQUIRE(child.extends.has_value());
+  REQUIRE(child.extends.value() == "base");
+  REQUIRE(child.forwards.empty());
+}
