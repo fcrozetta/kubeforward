@@ -1,35 +1,64 @@
-# If you prefer the allow list template instead of the deny list, see community template:
-# https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
-#
-# Binaries for programs and plugins
-*.exe
-*.exe~
-*.dll
+# OS / filesystem noise
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Editors / IDEs
+.idea/
+.vscode/
+.vs/
+*.swp
+*.swo
+*~
+
+# CMake / CTest / build trees
+build/
+build-*/
+cmake-build-*/
+out/
+dist/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+install_manifest.txt
+CTestTestfile.cmake
+DartConfiguration.tcl
+Testing/
+compile_commands.json
+CMakeUserPresets.json
+
+# Native build outputs
+*.o
+*.obj
+*.lo
+*.a
+*.lib
 *.so
+*.so.*
 *.dylib
-
-# Test binary, built with `go test -c`
-*.test
-
-# Code coverage profiles and other test artifacts
+*.dll
+*.exe
 *.out
+*.app
+*.dSYM/
+*.pdb
+
+# Coverage / profiling artifacts
+*.gcno
+*.gcda
+*.gcov
+*.profraw
+*.profdata
+coverage/
 coverage.*
 *.coverprofile
 profile.cov
 
-# Dependency directories (remove the comment below to include it)
-# vendor/
-
-# Go workspace file
-go.work
-go.work.sum
-
-# env file
-.env
-
-# Editor/IDE
-# .idea/
-# .vscode/
-
-# CMake build artifacts
-build/
+# Logs and temporary files
+*.log
+*.tmp
