@@ -5,3 +5,4 @@
 - **Config architecture**: design/implement YAML schemas, typed DTOs, validation pipelines, and fixtures/tests.
 - **CI/test enablement**: add `enable_testing()`, wire `ctest`, and craft smoke/unit harnesses for critical modules.
 - **Repo hygiene**: enforce deterministic tooling, document constraints, and surface debt/risks per project guide.
+- **Public skill: `github-format-layout`**: shared formatting policy + templates for Releases/PRs/Issues under `.ai/skills/github-format-layout/`.
