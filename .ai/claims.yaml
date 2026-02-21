@@ -9,11 +9,11 @@ claims:
       expected: "builtin-baseline\": \"81ded1ca9f81437a39dc520c653f3006953308f3\""
     updated_at: 2026-02-21T16:20:47Z
   - id: ai-dir-policy
-    statement: "All persistent AI memories/skills must be stored under .ai/ per repository policy."
-    source: "Developer directive 2026-02-18; agents.md policy"
+    statement: "Repository-local AI claims/memory and shared repo skills are stored under .ai/."
+    source: "agents.md policy"
     validation:
       type: doc-check
       steps:
-        - "Verify agents.md contains the .ai policy section."
-        - "Confirm relevant .ai files exist (skills, claims, etc.)."
+        - "Verify agents.md states repository-local artifacts are stored under .ai/."
+        - "Confirm relevant .ai files exist for repo-local claims/memory."
     updated_at: 2026-02-21T16:20:47Z
