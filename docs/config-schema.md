@@ -1,7 +1,7 @@
 # Kubeforward Config Schema (v1)
 
 ## Format & Location
-- File name: `kubeforward.yaml` at repo root. Optional `.json` variant for automation, but YAML is the canonical authoring format.
+- Default file name: `kubeforward.yaml` in the current working directory. Optional `.json` variant for automation, but YAML is the canonical authoring format.
 - UTF-8 only, deterministic ordering to keep diffs clean.
 - Single document per repo. Nested `includes` are forbidden to avoid non-deterministic evaluation.
 
@@ -68,9 +68,10 @@ environments:
 - Semantic errors → exit 3 with deterministic list of violations, sorted by environment then forward.
 
 ## Compatibility Guarantees
-- CLI accepts `--config <path>` to override lookup but still requires schema v1.
-- JSON variant is accepted via `--config` but must conform to the same field names and casing.
-- Generated plans (`kubeforward plan --json`) echo normalized schema to enable linting by other tools.
+- CLI accepts `-f` / `--file <path>` to override lookup but still requires schema v1.
+- CLI accepts `-e` / `--env <name>` as an optional filter over loaded environments.
+- CLI accepts `-v` / `--verbose` to render full field-level plan details.
+- JSON variant is accepted via `-f` / `--file` but must conform to the same field names and casing.
 
 ## Future Evolution Hooks
 - Reserved top-level key `extensions` (map<string,any>) for experimental modules; ignored unless `--enable-extension=<name>` flag provided.

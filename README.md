@@ -36,11 +36,17 @@ cmake --build build/Debug
 
 ```bash
 ./build/Debug/kubeforward help
-./build/Debug/kubeforward plan --config kubeforward.yaml --env dev
+./build/Debug/kubeforward -e dev
+./build/Debug/kubeforward -v
+./build/Debug/kubeforward plan --env dev
+./build/Debug/kubeforward plan -f ./configs/staging.yaml -e staging -v
 ```
 
 - `help` prints the global command list.
-- `plan` loads `kubeforward.yaml`, validates it, and lists the forwards for the selected environment (or all environments when `--env` is omitted).
+- Running `kubeforward` without a subcommand defaults to `plan`.
+- `plan` loads `kubeforward.yaml` from the current directory by default and lists all environments.
+- `--env`/`-e` filters to a single environment.
+- `--verbose`/`-v` prints full plan details (defaults + environment + forward fields).
 
 ## Configuration
 
@@ -64,5 +70,6 @@ to execute all suites (config loader + CLI plan). Add new `TEST_CASE`s under `te
 
 - `help`: prints usage and supported commands.
 - `plan`: validates the config and prints a summary of each environment. Options:
-  - `--config <path>`: alternate path to `kubeforward.yaml`.
-  - `--env <name>`: limit output to a single environment.
+  - `-f, --file <path>`: alternate path to config file (default `./kubeforward.yaml`).
+  - `-e, --env <name>`: environment to display (optional filter).
+  - `-v, --verbose`: print detailed fields instead of summary.

@@ -1,4 +1,4 @@
-last_updated: 2026-02-21T21:58:01Z
+last_updated: 2026-02-23T00:00:47Z
 claims:
   - id: vcpkg-baseline
     statement: "vcpkg manifest baseline is pinned to commit 81ded1ca9f81437a39dc520c653f3006953308f3."
@@ -26,3 +26,60 @@ claims:
         - "Verify .github/workflows/release.yml has 'Publish unsigned GitHub Release (pre-1.0)' conditioned on tags starting with 0."
         - "Verify sign-notarize-release job is gated to non-0.* tags."
     updated_at: 2026-02-21T21:58:01Z
+  - id: cli-verbose-convention
+    statement: "CLI commands should include -v/--verbose where it adds operational detail, without requiring a separate owner reminder."
+    source: "Owner decision 2026-02-22"
+    validation:
+      type: doc-check
+      steps:
+        - "When adding a new user-facing command, verify whether verbose output is meaningful and implement -v/--verbose by default when it is."
+        - "Update README command options and CLI tests to cover verbose behavior."
+    updated_at: 2026-02-22T18:04:18Z
+  - id: cli-default-config-file
+    statement: "CLI defaults to loading kubeforward.yaml from the current working directory when no file flag is provided."
+    source: "Owner decision 2026-02-22"
+    validation:
+      type: command
+      command: "./build/Debug/kubeforward plan --help"
+      expected: "defaults to kubeforward.yaml in current directory"
+    updated_at: 2026-02-23T00:00:47Z
+  - id: cli-file-flag-contract
+    statement: "Config file override flag is -f/--file only; --config is not supported."
+    source: "Owner decision 2026-02-22"
+    validation:
+      type: command
+      command: "./build/Debug/kubeforward plan --help"
+      expected: "-f, --file"
+    updated_at: 2026-02-23T00:00:47Z
+  - id: cli-default-subcommand-plan
+    statement: "Running kubeforward with no explicit subcommand defaults to plan."
+    source: "Owner decision 2026-02-22"
+    validation:
+      type: test
+      target: "tests/cli_plan_tests.cpp"
+      case: "default command is plan when no subcommand is provided"
+    updated_at: 2026-02-23T00:00:47Z
+  - id: cli-plan-composability
+    statement: "plan is composable: it loads the file, -e/--env filters environments, and -v/--verbose switches to detailed field output."
+    source: "Owner decision 2026-02-22"
+    validation:
+      type: test
+      target: "tests/cli_plan_tests.cpp"
+      case: "plan without env shows all environments; plan env verbose filters to selected environment"
+    updated_at: 2026-02-23T00:00:47Z
+  - id: cli-plan-env-default-scope
+    statement: "Without --env, plan renders all environments in the loaded config."
+    source: "Owner decision 2026-02-22"
+    validation:
+      type: test
+      target: "tests/cli_plan_tests.cpp"
+      case: "plan without env shows all environments"
+    updated_at: 2026-02-23T00:00:47Z
+  - id: cli-plan-format-deferred
+    statement: "--format is intentionally removed for now and deferred until later CLI phases."
+    source: "Owner decision 2026-02-22"
+    validation:
+      type: command
+      command: "./build/Debug/kubeforward plan --help"
+      expected: "--format absent"
+    updated_at: 2026-02-23T00:00:47Z
