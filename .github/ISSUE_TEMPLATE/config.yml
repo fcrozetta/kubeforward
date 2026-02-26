@@ -1,0 +1,9 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://github.com/fcrozetta/kubeforward/tree/main/docs
+    about: Check existing docs before opening an issue.
+  - name: Usage and setup
+    url: https://github.com/fcrozetta/kubeforward#readme
+    about: Validate the current CLI workflow and constraints.
+

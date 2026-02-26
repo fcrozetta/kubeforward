@@ -1,0 +1,28 @@
+last_updated: 2026-02-21T21:58:01Z
+claims:
+  - id: vcpkg-baseline
+    statement: "vcpkg manifest baseline is pinned to commit 81ded1ca9f81437a39dc520c653f3006953308f3."
+    source: "vcpkg.json"
+    validation:
+      type: command
+      command: "rg -n \"builtin-baseline\" vcpkg.json"
+      expected: "builtin-baseline\": \"81ded1ca9f81437a39dc520c653f3006953308f3\""
+    updated_at: 2026-02-21T16:20:47Z
+  - id: ai-dir-policy
+    statement: "Repository-local AI claims/memory and shared repo skills are stored under .ai/."
+    source: "agents.md policy"
+    validation:
+      type: doc-check
+      steps:
+        - "Verify agents.md states repository-local artifacts are stored under .ai/."
+        - "Confirm relevant .ai files exist for repo-local claims/memory."
+    updated_at: 2026-02-21T16:20:47Z
+  - id: pre-1.0-release-policy
+    statement: "Before 1.0.0, kubeforward releases are unsigned and not notarized."
+    source: "Owner decision 2026-02-21"
+    validation:
+      type: doc-check
+      steps:
+        - "Verify .github/workflows/release.yml has 'Publish unsigned GitHub Release (pre-1.0)' conditioned on tags starting with 0."
+        - "Verify sign-notarize-release job is gated to non-0.* tags."
+    updated_at: 2026-02-21T21:58:01Z

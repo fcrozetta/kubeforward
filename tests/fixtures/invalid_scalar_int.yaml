@@ -1,0 +1,14 @@
+version: 1
+metadata:
+  project: invalid-int
+environments:
+  dev:
+    forwards:
+      - name: api
+        resource:
+          kind: deployment
+          name: api
+        ports:
+          - local: abc
+            remote: 7000
+

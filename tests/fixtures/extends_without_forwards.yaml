@@ -1,0 +1,16 @@
+version: 1
+metadata:
+  project: extends-no-forwards
+environments:
+  base:
+    forwards:
+      - name: base-api
+        resource:
+          kind: deployment
+          name: api
+        ports:
+          - local: 7000
+            remote: 7000
+  child:
+    extends: base
+

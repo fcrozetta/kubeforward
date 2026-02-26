@@ -70,6 +70,8 @@ stored correctly (certificate, keychain handling, notarization credentials).
 
 ## How agents should work in this repo
 
+Repository-local agent artifacts (claims/memory and shared repo skills) must live under `.ai/`.
+
 When making changes:
 1. Keep PRs small and single-purpose.
 2. Add/update tests when behavior changes.

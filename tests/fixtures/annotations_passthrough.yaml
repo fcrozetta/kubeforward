@@ -1,0 +1,20 @@
+version: 1
+metadata:
+  project: annotation-passthrough
+environments:
+  dev:
+    forwards:
+      - name: api
+        resource:
+          kind: service
+          name: api
+        annotations:
+          detach: false
+          customPolicy:
+            retries: 3
+            mode: strict
+          owner: platform
+        ports:
+          - local: 7000
+            remote: 80
+
