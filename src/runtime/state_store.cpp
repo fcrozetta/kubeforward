@@ -2,10 +2,16 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include <cerrno>
+#include <cstring>
 #include <cstdlib>
 #include <fstream>
 #include <functional>
 #include <sstream>
+
+#include <fcntl.h>
+#include <sys/file.h>
+#include <unistd.h>
 
 namespace kubeforward::runtime {
 namespace {
@@ -126,6 +132,30 @@ RuntimeState ParseStateNode(const YAML::Node& root, std::vector<std::string>& er
   return state;
 }
 
+std::filesystem::path StateLockPath(const std::filesystem::path& path) { return path.string() + ".lock"; }
+
+int OpenAndLockStateFile(const std::filesystem::path& path, int lock_mode, std::string& error) {
+  const auto lock_path = StateLockPath(path);
+  const int lock_fd = ::open(lock_path.c_str(), O_CREAT | O_RDWR, 0644);
+  if (lock_fd < 0) {
+    error = "failed to open state lock file: " + std::string(std::strerror(errno));
+    return -1;
+  }
+  if (::flock(lock_fd, lock_mode) != 0) {
+    error = "failed to lock state file: " + std::string(std::strerror(errno));
+    ::close(lock_fd);
+    return -1;
+  }
+  error.clear();
+  return lock_fd;
+}
+
+std::filesystem::path BuildTemporaryStatePath(const std::filesystem::path& path) {
+  std::ostringstream suffix;
+  suffix << ".tmp." << ::getpid();
+  return path.string() + suffix.str();
+}
+
 }  // namespace
 
 std::filesystem::path DefaultStatePathForConfig(const std::string& config_path) {
@@ -143,8 +173,25 @@ std::filesystem::path DefaultStatePathForConfig(const std::string& config_path) 
 
 StateLoadResult LoadState(const std::filesystem::path& path) {
   StateLoadResult result;
+  const auto parent = path.parent_path();
+  if (!parent.empty()) {
+    std::error_code parent_ec;
+    const bool parent_exists = std::filesystem::exists(parent, parent_ec);
+    if (parent_ec || !parent_exists) {
+      return result;
+    }
+  }
+
+  std::string lock_error;
+  const int lock_fd = OpenAndLockStateFile(path, LOCK_SH, lock_error);
+  if (lock_fd < 0) {
+    result.errors.push_back(lock_error);
+    return result;
+  }
+
   std::ifstream input(path);
   if (!input.is_open()) {
+    ::close(lock_fd);
     return result;
   }
 
@@ -156,6 +203,7 @@ StateLoadResult LoadState(const std::filesystem::path& path) {
   } catch (const YAML::ParserException& ex) {
     result.errors.push_back(std::string("state parse error: ") + ex.what());
   }
+  ::close(lock_fd);
   return result;
 }
 
@@ -167,18 +215,41 @@ bool SaveState(const std::filesystem::path& path, const RuntimeState& state, std
     return false;
   }
 
-  std::ofstream out(path, std::ios::trunc);
+  const int lock_fd = OpenAndLockStateFile(path, LOCK_EX, error);
+  if (lock_fd < 0) {
+    return false;
+  }
+
+  const auto tmp_path = BuildTemporaryStatePath(path);
+  std::ofstream out(tmp_path, std::ios::trunc);
   if (!out.is_open()) {
-    error = "failed to open state file for writing";
+    error = "failed to open temporary state file for writing";
+    ::close(lock_fd);
     return false;
   }
   out << SerializeState(state);
   out.flush();
   if (!out.good()) {
-    error = "failed to flush state file";
+    error = "failed to flush temporary state file";
+    out.close();
+    std::error_code remove_ec;
+    std::filesystem::remove(tmp_path, remove_ec);
+    ::close(lock_fd);
+    return false;
+  }
+  out.close();
+
+  std::error_code rename_ec;
+  std::filesystem::rename(tmp_path, path, rename_ec);
+  if (rename_ec) {
+    error = "failed to replace state file atomically: " + rename_ec.message();
+    std::error_code remove_ec;
+    std::filesystem::remove(tmp_path, remove_ec);
+    ::close(lock_fd);
     return false;
   }
 
+  ::close(lock_fd);
   error.clear();
   return true;
 }

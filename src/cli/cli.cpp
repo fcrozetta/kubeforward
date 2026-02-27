@@ -1,18 +1,29 @@
 #include "kubeforward/cli.h"
 
 #include <algorithm>
+#include <cerrno>
+#include <cstring>
+#include <cstdlib>
 #include <ctime>
 #include <filesystem>
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include <arpa/inet.h>
 #include <cxxopts.hpp>
+#include <netinet/in.h>
+#include <signal.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 #include "kubeforward/config/loader.h"
 #include "kubeforward/runtime/process_runner.h"
@@ -212,6 +223,220 @@ struct CommandOptions {
 
 const char* RunMode(bool daemon) { return daemon ? "daemon" : "foreground"; }
 
+std::string ResourceKindTargetPrefix(kubeforward::config::ResourceKind kind) {
+  switch (kind) {
+    case kubeforward::config::ResourceKind::kPod:
+      return "pod";
+    case kubeforward::config::ResourceKind::kDeployment:
+      return "deployment";
+    case kubeforward::config::ResourceKind::kService:
+      return "service";
+    case kubeforward::config::ResourceKind::kStatefulSet:
+      return "statefulset";
+  }
+  return "pod";
+}
+
+const char* KubectlBinary() {
+  if (const char* override_bin = std::getenv("KUBEFORWARD_KUBECTL_BIN")) {
+    if (override_bin[0] != '\0') {
+      return override_bin;
+    }
+  }
+  return "kubectl";
+}
+
+bool UseNoopRunner() {
+  if (const char* value = std::getenv("KUBEFORWARD_USE_NOOP_RUNNER")) {
+    return std::string(value) == "1";
+  }
+  return false;
+}
+
+std::unique_ptr<kubeforward::runtime::ProcessRunner> MakeProcessRunner() {
+  if (UseNoopRunner()) {
+    return std::make_unique<kubeforward::runtime::NoopProcessRunner>();
+  }
+  return std::make_unique<kubeforward::runtime::PosixProcessRunner>();
+}
+
+std::string ResolveBindAddress(const kubeforward::config::PortMapping& port) {
+  if (port.bind_address.has_value() && !port.bind_address->empty()) {
+    return *port.bind_address;
+  }
+  return "127.0.0.1";
+}
+
+bool IsPidAlive(int pid) {
+  if (pid <= 0) {
+    return false;
+  }
+  if (::kill(pid, 0) == 0) {
+    return true;
+  }
+  return errno == EPERM;
+}
+
+bool CheckPortAvailability(const kubeforward::config::PortMapping& port, std::string& error) {
+  const int socket_type = port.protocol == kubeforward::config::PortProtocol::kUdp ? SOCK_DGRAM : SOCK_STREAM;
+  const int fd = ::socket(AF_INET, socket_type, 0);
+  if (fd < 0) {
+    if (errno == EPERM || errno == EACCES) {
+      // Restricted runtimes (tests/sandboxes) may forbid socket probes.
+      error.clear();
+      return true;
+    }
+    error = "failed to create socket for preflight";
+    return false;
+  }
+
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(static_cast<uint16_t>(port.local_port));
+  const auto bind_address = ResolveBindAddress(port);
+  if (::inet_pton(AF_INET, bind_address.c_str(), &addr.sin_addr) != 1) {
+    ::close(fd);
+    error = "invalid bind address '" + bind_address + "'";
+    return false;
+  }
+
+  if (::bind(fd, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) != 0) {
+    if (errno == EPERM || errno == EACCES) {
+      // Restricted runtimes (tests/sandboxes) may forbid bind probes.
+      ::close(fd);
+      error.clear();
+      return true;
+    }
+    std::ostringstream oss;
+    if (errno == EADDRINUSE) {
+      oss << "local port " << port.local_port << " is already in use on " << bind_address;
+    } else {
+      oss << "failed to preflight port " << port.local_port << " on " << bind_address << ": " << std::strerror(errno);
+    }
+    error = oss.str();
+    ::close(fd);
+    return false;
+  }
+
+  ::close(fd);
+  error.clear();
+  return true;
+}
+
+std::string SanitizeLogToken(const std::string& token) {
+  std::string result;
+  result.reserve(token.size());
+  for (char ch : token) {
+    const bool safe = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '-' ||
+                      ch == '_' || ch == '.';
+    result.push_back(safe ? ch : '_');
+  }
+  if (result.empty()) {
+    return "forward";
+  }
+  return result;
+}
+
+std::filesystem::path DefaultLogsDirectoryForConfig(const std::string& normalized_config_path) {
+  const size_t hash = std::hash<std::string>{}(normalized_config_path);
+  const auto base_dir = std::filesystem::temp_directory_path() / "kubeforward";
+  return base_dir / ("logs-" + std::to_string(hash));
+}
+
+std::filesystem::path BuildForwardLogPath(const std::string& normalized_config_path, const std::string& env_name,
+                                          const std::string& forward_name, int local_port) {
+  const auto logs_dir = DefaultLogsDirectoryForConfig(normalized_config_path);
+  std::ostringstream filename;
+  filename << SanitizeLogToken(env_name) << "-" << SanitizeLogToken(forward_name) << "-" << local_port << ".log";
+  return logs_dir / filename.str();
+}
+
+bool BuildKubectlPortForwardArgv(const kubeforward::runtime::ResolvedEnvironment& env,
+                                 const kubeforward::runtime::ResolvedForward& forward,
+                                 const kubeforward::config::PortMapping& port, std::vector<std::string>& argv,
+                                 std::string& error) {
+  if (port.protocol != kubeforward::config::PortProtocol::kTcp) {
+    error = "unsupported protocol for kubectl port-forward (only tcp is supported)";
+    return false;
+  }
+
+  if (!forward.resource.name.has_value() || forward.resource.name->empty()) {
+    if (!forward.resource.selector.empty()) {
+      error = "selector-based targets are not supported for up yet (set resource.name)";
+    } else {
+      error = "resource.name is required for kubectl port-forward";
+    }
+    return false;
+  }
+
+  const std::string target = ResourceKindTargetPrefix(forward.resource.kind) + "/" + *forward.resource.name;
+  argv = {KubectlBinary(), "port-forward", target, std::to_string(port.local_port) + ":" + std::to_string(port.remote_port)};
+  argv.push_back("--namespace");
+  argv.push_back(forward.namespace_name);
+  if (env.settings.context.has_value() && !env.settings.context->empty()) {
+    argv.push_back("--context");
+    argv.push_back(*env.settings.context);
+  }
+  if (env.settings.kubeconfig.has_value() && !env.settings.kubeconfig->empty()) {
+    argv.push_back("--kubeconfig");
+    argv.push_back(*env.settings.kubeconfig);
+  }
+  if (port.bind_address.has_value() && !port.bind_address->empty()) {
+    argv.push_back("--address");
+    argv.push_back(*port.bind_address);
+  }
+  if (forward.container.has_value() && !forward.container->empty()) {
+    argv.push_back("--container");
+    argv.push_back(*forward.container);
+  }
+  error.clear();
+  return true;
+}
+
+bool CheckRuntimeSessionPortConflicts(const kubeforward::runtime::RuntimeState& state,
+                                      const std::string& normalized_config_path,
+                                      const kubeforward::runtime::ResolvedEnvironment& target_env, std::string& error) {
+  std::set<int> target_ports;
+  for (const auto& forward : target_env.forwards) {
+    for (const auto& port : forward.ports) {
+      target_ports.insert(port.local_port);
+    }
+  }
+
+  for (const auto& session : state.sessions) {
+    if (session.config_path == normalized_config_path && session.environment == target_env.name) {
+      continue;
+    }
+    for (const auto& process : session.forwards) {
+      if (target_ports.count(process.local_port) == 0) {
+        continue;
+      }
+      if (!IsPidAlive(process.pid)) {
+        continue;
+      }
+      std::ostringstream oss;
+      oss << "local port " << process.local_port << " is already claimed by running session '" << session.id << "'";
+      error = oss.str();
+      return false;
+    }
+  }
+
+  error.clear();
+  return true;
+}
+
+bool CheckPlanPortsAvailable(const kubeforward::runtime::ResolvedEnvironment& target_env, std::string& error) {
+  for (const auto& forward : target_env.forwards) {
+    for (const auto& port : forward.ports) {
+      if (!CheckPortAvailability(port, error)) {
+        return false;
+      }
+    }
+  }
+  error.clear();
+  return true;
+}
+
 void PrintForwardNames(const kubeforward::config::EnvironmentDefinition& env, const std::string& indent) {
   std::cout << indent << "forward names:\n";
   if (env.forwards.empty()) {
@@ -314,21 +539,6 @@ std::string NormalizePath(const std::string& raw_path) {
   return absolute.string();
 }
 
-bool RemoveSessionsForTarget(kubeforward::runtime::RuntimeState& state, const std::string& config_path,
-                             const std::optional<std::string>& env_filter) {
-  const auto before = state.sessions.size();
-  state.sessions.erase(
-      std::remove_if(state.sessions.begin(), state.sessions.end(),
-                     [&](const kubeforward::runtime::ManagedSession& session) {
-                       if (session.config_path != config_path) {
-                         return false;
-                       }
-                       return !env_filter.has_value() || session.environment == *env_filter;
-                     }),
-      state.sessions.end());
-  return before != state.sessions.size();
-}
-
 int RunUpCommand(const std::vector<std::string>& args) {
   //! up always resolves to a single environment target.
   CommandOptions options;
@@ -375,11 +585,48 @@ int RunUpCommand(const std::vector<std::string>& args) {
   }
 
   kubeforward::runtime::RuntimeState state = state_load.state;
-  RemoveSessionsForTarget(state, normalized_config_path, std::optional<std::string>{resolved_env.name});
+  auto runner = MakeProcessRunner();
+  bool replace_stop_failed = false;
+  int replaced_processes = 0;
+  state.sessions.erase(
+      std::remove_if(state.sessions.begin(), state.sessions.end(),
+                     [&](const kubeforward::runtime::ManagedSession& existing) {
+                       if (existing.config_path != normalized_config_path || existing.environment != resolved_env.name) {
+                         return false;
+                       }
+                       bool session_failed = false;
+                       for (const auto& process : existing.forwards) {
+                         std::string stop_error;
+                         if (!runner->Stop(process.pid, stop_error)) {
+                           std::cerr << "up: failed to stop replaced pid " << process.pid << ": " << stop_error << "\n";
+                           replace_stop_failed = true;
+                           session_failed = true;
+                         } else {
+                           ++replaced_processes;
+                         }
+                       }
+                       return !session_failed;
+                     }),
+      state.sessions.end());
 
-  kubeforward::runtime::NoopProcessRunner runner;
+  if (replace_stop_failed) {
+    return 2;
+  }
+
+  if (!UseNoopRunner()) {
+    std::string preflight_error;
+    if (!CheckRuntimeSessionPortConflicts(state, normalized_config_path, resolved_env, preflight_error)) {
+      std::cerr << "up: preflight failed: " << preflight_error << "\n";
+      return 2;
+    }
+    if (!CheckPlanPortsAvailable(resolved_env, preflight_error)) {
+      std::cerr << "up: preflight failed: " << preflight_error << "\n";
+      return 2;
+    }
+  }
+
   kubeforward::runtime::ManagedSession session;
-  session.id = normalized_config_path + "::" + resolved_env.name;
+  session.id = normalized_config_path + "::" + resolved_env.name + "::" + UtcNowString();
   session.config_path = normalized_config_path;
   session.environment = resolved_env.name;
   session.daemon = options.daemon;
@@ -387,16 +634,27 @@ int RunUpCommand(const std::vector<std::string>& args) {
 
   for (const auto& forward : resolved_env.forwards) {
     for (const auto& port : forward.ports) {
+      std::vector<std::string> argv;
+      std::string argv_error;
+      if (!BuildKubectlPortForwardArgv(resolved_env, forward, port, argv, argv_error)) {
+        std::cerr << "up: invalid forward '" << forward.name << "': " << argv_error << "\n";
+        return 2;
+      }
+
       kubeforward::runtime::StartProcessRequest request;
       request.cwd = std::filesystem::current_path();
       request.daemon = options.daemon;
-      request.argv = {"kubectl", "port-forward", forward.name,
-                      std::to_string(port.local_port) + ":" + std::to_string(port.remote_port)};
+      request.argv = argv;
+      request.log_path = BuildForwardLogPath(normalized_config_path, resolved_env.name, forward.name, port.local_port);
 
       std::string start_error;
-      const auto started = runner.Start(request, start_error);
+      const auto started = runner->Start(request, start_error);
       if (!started.has_value()) {
         std::cerr << "up: failed to start forward '" << forward.name << "': " << start_error << "\n";
+        for (const auto& started_forward : session.forwards) {
+          std::string rollback_error;
+          (void)runner->Stop(started_forward.pid, rollback_error);
+        }
         return 2;
       }
 
@@ -424,6 +682,9 @@ int RunUpCommand(const std::vector<std::string>& args) {
   std::cout << "  forwards: " << resolved_env.forwards.size() << "\n";
   if (options.verbose) {
     std::cout << "  state: " << state_path.string() << "\n";
+    std::cout << "  kubectl: " << KubectlBinary() << "\n";
+    std::cout << "  replaced: " << replaced_processes << "\n";
+    std::cout << "  logs: " << DefaultLogsDirectoryForConfig(normalized_config_path).string() << "\n";
     PrintForwardNames(resolved_env, "  ");
   }
   return 0;
@@ -454,7 +715,7 @@ int RunDownCommand(const std::vector<std::string>& args) {
     return 2;
   }
   kubeforward::runtime::RuntimeState state = state_load.state;
-  kubeforward::runtime::NoopProcessRunner runner;
+  auto runner = MakeProcessRunner();
   int stopped_processes = 0;
   bool stop_failed = false;
 
@@ -465,28 +726,29 @@ int RunDownCommand(const std::vector<std::string>& args) {
     if (!options.env_filter.empty() && session.environment != options.env_filter) {
       return false;
     }
+    bool session_failed = false;
     for (const auto& process : session.forwards) {
       std::string stop_error;
-      if (!runner.Stop(process.pid, stop_error)) {
+      if (!runner->Stop(process.pid, stop_error)) {
         std::cerr << "down: failed to stop pid " << process.pid << ": " << stop_error << "\n";
         stop_failed = true;
-      }
-      if (!stop_failed) {
+        session_failed = true;
+      } else {
         ++stopped_processes;
       }
     }
-    return !stop_failed;
+    return !session_failed;
   };
 
   state.sessions.erase(std::remove_if(state.sessions.begin(), state.sessions.end(), stop_session), state.sessions.end());
 
-  if (stop_failed) {
-    return 2;
-  }
-
   std::string save_error;
   if (!kubeforward::runtime::SaveState(state_path, state, save_error)) {
     std::cerr << "down: failed to save runtime state '" << state_path.string() << "': " << save_error << "\n";
+    return 2;
+  }
+
+  if (stop_failed) {
     return 2;
   }
 

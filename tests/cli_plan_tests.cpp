@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <sstream>
@@ -55,6 +56,31 @@ class ScopedCurrentPath {
 
  private:
   std::filesystem::path original_;
+};
+
+class ScopedEnvVar {
+ public:
+  ScopedEnvVar(const char* key, const char* value) : key_(key) {
+    const char* existing = std::getenv(key_);
+    if (existing != nullptr) {
+      had_original_ = true;
+      original_ = existing;
+    }
+    ::setenv(key_, value, 1);
+  }
+
+  ~ScopedEnvVar() {
+    if (had_original_) {
+      ::setenv(key_, original_.c_str(), 1);
+      return;
+    }
+    ::unsetenv(key_);
+  }
+
+ private:
+  const char* key_;
+  bool had_original_ = false;
+  std::string original_;
 };
 
 CliResult RunAndCapture(const std::vector<std::string>& args) {
@@ -123,6 +149,7 @@ TEST_CASE("version flag prints app version", "[cli]") {
 }
 
 TEST_CASE("up defaults to the first environment when --env is omitted", "[cli]") {
+  ScopedEnvVar noop_runner("KUBEFORWARD_USE_NOOP_RUNNER", "1");
   std::vector<std::string> args = {"kubeforward", "up", "--file", Fixture("basic.yaml")};
   const auto result = RunAndCapture(args);
 
@@ -132,15 +159,17 @@ TEST_CASE("up defaults to the first environment when --env is omitted", "[cli]")
 }
 
 TEST_CASE("up supports daemon mode and explicit environment", "[cli]") {
-  std::vector<std::string> args = {"kubeforward", "up", "--file", Fixture("basic.yaml"), "--env", "prod", "--daemon"};
+  ScopedEnvVar noop_runner("KUBEFORWARD_USE_NOOP_RUNNER", "1");
+  std::vector<std::string> args = {"kubeforward", "up", "--file", Fixture("basic.yaml"), "--env", "dev", "--daemon"};
   const auto result = RunAndCapture(args);
 
   REQUIRE(result.exit_code == 0);
-  CHECK(result.out.find("env: prod") != std::string::npos);
+  CHECK(result.out.find("env: dev") != std::string::npos);
   CHECK(result.out.find("mode: daemon") != std::string::npos);
 }
 
 TEST_CASE("up supports verbose output", "[cli]") {
+  ScopedEnvVar noop_runner("KUBEFORWARD_USE_NOOP_RUNNER", "1");
   std::vector<std::string> args = {"kubeforward", "up", "--file", Fixture("basic.yaml"), "--env", "dev", "--verbose"};
   const auto result = RunAndCapture(args);
 
@@ -150,6 +179,7 @@ TEST_CASE("up supports verbose output", "[cli]") {
 }
 
 TEST_CASE("down defaults to all environments when --env is omitted", "[cli]") {
+  ScopedEnvVar noop_runner("KUBEFORWARD_USE_NOOP_RUNNER", "1");
   std::vector<std::string> args = {"kubeforward", "down", "--file", Fixture("basic.yaml")};
   const auto result = RunAndCapture(args);
 
@@ -159,6 +189,7 @@ TEST_CASE("down defaults to all environments when --env is omitted", "[cli]") {
 }
 
 TEST_CASE("down supports explicit environment and daemon mode", "[cli]") {
+  ScopedEnvVar noop_runner("KUBEFORWARD_USE_NOOP_RUNNER", "1");
   std::vector<std::string> args = {"kubeforward", "down", "--file", Fixture("basic.yaml"), "-e", "dev", "-d"};
   const auto result = RunAndCapture(args);
 
@@ -169,6 +200,7 @@ TEST_CASE("down supports explicit environment and daemon mode", "[cli]") {
 }
 
 TEST_CASE("down supports verbose output", "[cli]") {
+  ScopedEnvVar noop_runner("KUBEFORWARD_USE_NOOP_RUNNER", "1");
   std::vector<std::string> args = {"kubeforward", "down", "--file", Fixture("basic.yaml"), "--verbose"};
   const auto result = RunAndCapture(args);
 

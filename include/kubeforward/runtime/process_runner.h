@@ -29,6 +29,13 @@ class ProcessRunner {
   virtual bool Stop(int pid, std::string& error) = 0;
 };
 
+//! POSIX-backed runner that launches and terminates real child process groups.
+class PosixProcessRunner final : public ProcessRunner {
+ public:
+  std::optional<StartedProcess> Start(const StartProcessRequest& request, std::string& error) override;
+  bool Stop(int pid, std::string& error) override;
+};
+
 //! No-op runner used while kubectl invocation is not yet wired.
 class NoopProcessRunner final : public ProcessRunner {
  public:

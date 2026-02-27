@@ -1,4 +1,4 @@
-last_updated: 2026-02-27T19:05:42Z
+last_updated: 2026-02-27T19:58:36Z
 claims:
   - id: vcpkg-baseline
     statement: "vcpkg manifest baseline is pinned to commit 81ded1ca9f81437a39dc520c653f3006953308f3."
@@ -126,10 +126,26 @@ claims:
       case: "state store round-trips sessions; state store returns empty state for missing files; default state path is deterministic for config path"
     updated_at: 2026-02-27T19:05:42Z
   - id: runtime-process-runner-foundation
-    statement: "Process control abstraction exists with ProcessRunner interface and NoopProcessRunner baseline for pre-kubectl lifecycle wiring."
+    statement: "Process control abstraction includes PosixProcessRunner for real child lifecycle management (start + signal-based stop) and NoopProcessRunner for deterministic tests."
     source: "Owner decision 2026-02-27"
     validation:
       type: test
       target: "tests/runtime_process_runner_tests.cpp"
-      case: "noop process runner allocates stable synthetic pids; noop process runner rejects empty argv; noop process runner validates pid on stop"
-    updated_at: 2026-02-27T19:05:42Z
+      case: "posix process runner starts and stops a process group; posix process runner reports exec failures; posix process runner treats missing pid as already stopped; noop process runner allocates stable synthetic pids; noop process runner rejects empty argv; noop process runner validates pid on stop"
+    updated_at: 2026-02-27T19:58:36Z
+  - id: runtime-state-store-atomic-write-lock
+    statement: "Runtime state save/load uses a companion lock file and atomic temp-file rename to avoid partial writes and reduce concurrent command races."
+    source: "Owner decision 2026-02-27"
+    validation:
+      type: command
+      command: "rg -n \"flock|\\.tmp\\.|filesystem::rename|StateLockPath\" src/runtime/state_store.cpp"
+      expected: "LOCK_EX/LOCK_SH with temporary file rename"
+    updated_at: 2026-02-27T19:58:36Z
+  - id: cli-up-kubectl-argv-preflight
+    statement: "up now builds kubectl port-forward argv from resolved runtime plan fields and performs preflight checks for occupied local ports before spawning real processes."
+    source: "Owner decision 2026-02-27"
+    validation:
+      type: command
+      command: "rg -n \"BuildKubectlPortForwardArgv|CheckPlanPortsAvailable|CheckRuntimeSessionPortConflicts|PosixProcessRunner\" src/cli/cli.cpp"
+      expected: "kubectl argv + preflight + non-noop runner path"
+    updated_at: 2026-02-27T19:58:36Z
