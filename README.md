@@ -73,6 +73,9 @@ ctest --test-dir build/Debug
 
 to execute all suites (config loader + CLI plan). Add new `TEST_CASE`s under `tests/`.
 
+For runtime smoke validation against a real Kubernetes API, use `tests/kind_smoke.sh` with a local `kind` cluster.
+GitHub Releases are gated by the same smoke flow on `ubuntu-latest` before the macOS packaging/signing jobs run.
+
 ## Commands
 
 - `help`: prints usage and supported commands.

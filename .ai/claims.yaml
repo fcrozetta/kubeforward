@@ -1,4 +1,4 @@
-last_updated: 2026-02-27T21:26:48Z
+last_updated: 2026-02-27T22:27:08Z
 claims:
   - id: vcpkg-baseline
     statement: "vcpkg manifest baseline is pinned to commit 81ded1ca9f81437a39dc520c653f3006953308f3."
@@ -157,3 +157,13 @@ claims:
       target: "tests/config_loader_tests.cpp"
       case: "config rejects selector-based resources"
     updated_at: 2026-02-27T21:26:48Z
+  - id: release-kind-smoke-gate
+    statement: "GitHub Releases are gated by a pre-release kind smoke stage on ubuntu-latest before macOS packaging/signing jobs run."
+    source: "Owner decision 2026-02-27"
+    validation:
+      type: doc-check
+      steps:
+        - "Verify .github/workflows/release.yml defines a pre-release-kind-smoke job on ubuntu-latest."
+        - "Verify build-macos-unsigned needs pre-release-kind-smoke."
+        - "Verify tests/kind_smoke.sh exists and is invoked by the workflow."
+    updated_at: 2026-02-27T22:27:08Z
