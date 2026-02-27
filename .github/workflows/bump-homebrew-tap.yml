@@ -93,7 +93,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ env.TAP_REPO }}
-          token: ${{ secrets.TAP_GITHUB_TOKEN }}
+          token: ${{ secrets.PAT_BREW_SCOOP_GITHUB_TOKEN }}
           path: tap
           fetch-depth: 0
 
@@ -189,7 +189,7 @@ jobs:
       - name: Create PR
         uses: peter-evans/create-pull-request@v6
         with:
-          token: ${{ secrets.TAP_GITHUB_TOKEN }}
+          token: ${{ secrets.PAT_BREW_SCOOP_GITHUB_TOKEN }}
           path: tap
           commit-message: "kubeforward: bump to ${{ steps.meta.outputs.version }}"
           branch: "bump/kubeforward-${{ steps.meta.outputs.version }}"
