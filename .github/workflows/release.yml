@@ -146,7 +146,11 @@ jobs:
         shell: bash
         run: |
           VERSION="${GITHUB_REF_NAME}"
-          PKG_NAME="kubeforward-${VERSION}-${{ matrix.os_name }}-${{ matrix.arch }}"
+          ARCH="${{ matrix.arch }}"
+          if [[ "${{ matrix.os_name }}" == "linux" && "${ARCH}" == "x64" ]]; then
+            ARCH="amd64"
+          fi
+          PKG_NAME="kubeforward-${VERSION}-${{ matrix.os_name }}-${ARCH}"
 
           mkdir -p "dist/${PKG_NAME}"
           cp build/Release/kubeforward "dist/${PKG_NAME}/"
