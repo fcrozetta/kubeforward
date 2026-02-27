@@ -28,10 +28,8 @@ environments:
       - name: string (required, unique per env)
         resource:
           kind: enum[pod, deployment, service, statefulset]
-          name: string                      # mutually exclusive with selector
-          selector: map<string,string>?     # mutually exclusive with name
+          name: string                      # required concrete target name
           namespace: string?                # overrides env/default namespace
-        container: string?                  # for pods w/ multiple containers
         ports:
           - local: int (required, 1-65535)
             remote: int (required, 1-65535)
@@ -56,8 +54,7 @@ environments:
 - Unknown keys anywhere cause failure; no silent drops.
 - `version` must equal `1`. Future versions will be backward incompatible and gated via CLI flag.
 - `name` uniqueness enforced within each environment and across entire file (global collisions block to prevent human confusion).
-- `resource.name` and `resource.selector` are mutually exclusive; at least one must be present.
-- `selector` maps must contain deterministic key ordering when serialized (CLI rewrites sorted order on `plan` output).
+- `resource.name` is required. Selector-based target resolution is intentionally unsupported for now.
 - `bindAddress` must be an IPv4 literal. Hostnames rejected to avoid implicit DNS dependencies.
 - Production environments (`guards.allowProduction=true`) require every forward to specify `annotations.detach=true` to enforce detached supervision.
 - `healthCheck.exec` commands are validated for absolute paths or repo-relative scripts; bare names rejected.

@@ -62,7 +62,6 @@ std::vector<ResolvedForward> ResolveForwards(const std::string& env_name, const 
     forward.environment = env_name;
     forward.name = source.name;
     forward.resource = source.resource;
-    forward.container = source.container;
     forward.detach = source.detach;
     forward.restart_policy = source.restart_policy;
     forward.health_check = source.health_check;

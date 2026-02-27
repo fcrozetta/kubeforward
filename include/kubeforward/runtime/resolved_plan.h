@@ -14,7 +14,6 @@ struct ResolvedForward {
   std::string environment;
   std::string name;
   config::ResourceSelector resource;
-  std::optional<std::string> container;
   std::vector<config::PortMapping> ports;
   std::string namespace_name;
   bool detach = false;

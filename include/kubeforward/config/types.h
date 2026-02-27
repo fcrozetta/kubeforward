@@ -51,7 +51,6 @@ struct EnvironmentGuards {
 struct ResourceSelector {
   ResourceKind kind = ResourceKind::kPod;
   std::optional<std::string> name;
-  std::map<std::string, std::string> selector;
   std::optional<std::string> namespace_override;
 };
 
@@ -73,7 +72,6 @@ struct HealthCheck {
 struct ForwardDefinition {
   std::string name;
   ResourceSelector resource;
-  std::optional<std::string> container;
   std::vector<PortMapping> ports;
   bool detach = false;
   RestartPolicy restart_policy = RestartPolicy::kFailFast;

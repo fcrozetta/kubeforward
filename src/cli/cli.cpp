@@ -168,13 +168,10 @@ void PrintPlanVerbose(const std::string& name, const kubeforward::config::Enviro
   }
   for (const auto& forward : env.forwards) {
     std::cout << "    - name: " << forward.name << "\n";
-    std::cout << "      container: " << OptionalValueOr(forward.container) << "\n";
     std::cout << "      resource:\n";
     std::cout << "        kind: " << ResourceKindToString(forward.resource.kind) << "\n";
     std::cout << "        name: " << OptionalValueOr(forward.resource.name) << "\n";
     std::cout << "        namespace: " << OptionalValueOr(forward.resource.namespace_override) << "\n";
-    std::cout << "        selector:\n";
-    PrintStringMap(forward.resource.selector, "          ");
     std::cout << "      annotations:\n";
     std::cout << "        detach: " << (forward.detach ? "true" : "false") << "\n";
     std::cout << "        restartPolicy: " << RestartPolicyToString(forward.restart_policy) << "\n";
@@ -361,11 +358,7 @@ bool BuildKubectlPortForwardArgv(const kubeforward::runtime::ResolvedEnvironment
   }
 
   if (!forward.resource.name.has_value() || forward.resource.name->empty()) {
-    if (!forward.resource.selector.empty()) {
-      error = "selector-based targets are not supported for up yet (set resource.name)";
-    } else {
-      error = "resource.name is required for kubectl port-forward";
-    }
+    error = "resource.name is required for kubectl port-forward";
     return false;
   }
 
@@ -384,10 +377,6 @@ bool BuildKubectlPortForwardArgv(const kubeforward::runtime::ResolvedEnvironment
   if (port.bind_address.has_value() && !port.bind_address->empty()) {
     argv.push_back("--address");
     argv.push_back(*port.bind_address);
-  }
-  if (forward.container.has_value() && !forward.container->empty()) {
-    argv.push_back("--container");
-    argv.push_back(*forward.container);
   }
   error.clear();
   return true;

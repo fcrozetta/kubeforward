@@ -26,8 +26,7 @@ environments:
       - name: prod-api
         resource:
           kind: pod
-          selector:
-            app: api
+          name: api
         annotations:
           detach: true
           healthCheck:

@@ -1,4 +1,4 @@
-last_updated: 2026-02-27T19:58:36Z
+last_updated: 2026-02-27T21:26:48Z
 claims:
   - id: vcpkg-baseline
     statement: "vcpkg manifest baseline is pinned to commit 81ded1ca9f81437a39dc520c653f3006953308f3."
@@ -142,10 +142,18 @@ claims:
       expected: "LOCK_EX/LOCK_SH with temporary file rename"
     updated_at: 2026-02-27T19:58:36Z
   - id: cli-up-kubectl-argv-preflight
-    statement: "up now builds kubectl port-forward argv from resolved runtime plan fields and performs preflight checks for occupied local ports before spawning real processes."
+    statement: "up now builds kubectl port-forward argv from resolved runtime plan fields and performs preflight checks for occupied local ports before spawning real processes; runtime execution requires concrete resource.name targets."
     source: "Owner decision 2026-02-27"
     validation:
       type: command
       command: "rg -n \"BuildKubectlPortForwardArgv|CheckPlanPortsAvailable|CheckRuntimeSessionPortConflicts|PosixProcessRunner\" src/cli/cli.cpp"
       expected: "kubectl argv + preflight + non-noop runner path"
-    updated_at: 2026-02-27T19:58:36Z
+    updated_at: 2026-02-27T21:26:48Z
+  - id: config-resource-name-only
+    statement: "Forward resources must use concrete resource.name targets; selector-based resources and container-specific targeting are intentionally unsupported for now to keep execution simple."
+    source: "Owner decision 2026-02-27"
+    validation:
+      type: test
+      target: "tests/config_loader_tests.cpp"
+      case: "config rejects selector-based resources"
+    updated_at: 2026-02-27T21:26:48Z
