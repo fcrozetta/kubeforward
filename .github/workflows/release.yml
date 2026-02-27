@@ -52,9 +52,7 @@ jobs:
           CMAKE_FLAGS: -DKF_APP_VERSION=${{ github.ref_name }}
 
       - name: Run kind smoke test
-        run: |
-          chmod +x tests/kind_smoke.sh
-          tests/kind_smoke.sh ./build/Release/kubeforward
+        run: make test-e2e BUILD_TYPE=Release
         env:
           KUBEFORWARD_KIND_SMOKE_WORKDIR: ${{ github.workspace }}/out/kind-smoke
 

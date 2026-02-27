@@ -68,12 +68,26 @@ See `docs/vscode.md` for a step-by-step VS Code setup (extensions, CMake/vcpkg i
 Kubeforward uses [Catch2](https://github.com/catchorg/Catch2) with CTest. After configuring/building, run:
 
 ```bash
-ctest --test-dir build/Debug
+make test
 ```
 
-to execute all suites (config loader + CLI plan). Add new `TEST_CASE`s under `tests/`.
+to execute the normal unit/runtime test suite.
 
-For runtime smoke validation against a real Kubernetes API, use `tests/kind_smoke.sh` with a local `kind` cluster.
+For runtime smoke validation against a real Kubernetes API, run:
+
+```bash
+make test-e2e
+```
+
+This builds the CLI and runs the `kind` smoke flow in `tests/kind_smoke.sh`.
+
+To run both the normal suite and the `kind` smoke flow in one command, run:
+
+```bash
+make test KIND_SMOKE=1
+```
+
+`make test-e2e` requires local Docker, `kind`, and `kubectl`.
 GitHub Releases are gated by the same smoke flow on `ubuntu-latest` before the macOS packaging/signing jobs run.
 
 ## Commands

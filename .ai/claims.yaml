@@ -1,4 +1,4 @@
-last_updated: 2026-02-27T22:27:08Z
+last_updated: 2026-02-27T22:45:09Z
 claims:
   - id: vcpkg-baseline
     statement: "vcpkg manifest baseline is pinned to commit 81ded1ca9f81437a39dc520c653f3006953308f3."
@@ -167,3 +167,13 @@ claims:
         - "Verify build-macos-unsigned needs pre-release-kind-smoke."
         - "Verify tests/kind_smoke.sh exists and is invoked by the workflow."
     updated_at: 2026-02-27T22:27:08Z
+  - id: make-test-e2e-contract
+    statement: "make test remains the normal unit/runtime suite; make test-e2e runs the local kind smoke flow after building the CLI; make test KIND_SMOKE=1 runs both."
+    source: "Owner decision 2026-02-27"
+    validation:
+      type: doc-check
+      steps:
+        - "Verify Makefile defines test-e2e and KIND_SMOKE behavior under test."
+        - "Verify README documents make test, make test-e2e, and make test KIND_SMOKE=1."
+        - "Verify release workflow uses make test-e2e for the kind smoke stage."
+    updated_at: 2026-02-27T22:45:09Z
