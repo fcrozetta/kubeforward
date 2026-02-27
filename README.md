@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="images/kubeforward.png" alt="kubeforward logo" width="180" />
+</p>
+
 # kubeforward
 
 Kubeforward is a macOS-first CLI for config-driven Kubernetes port-forward workflows.
