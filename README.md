@@ -85,7 +85,9 @@ to execute all suites (config loader + CLI plan). Add new `TEST_CASE`s under `te
   - `-f, --file <path>`: alternate path to config file.
   - `-e, --env <name>`: environment to start.
   - `-d, --daemon`: daemon mode (logs hidden).
+  - `-v, --verbose`: print detailed command output.
 - `down`: stops forwards for one environment or all environments. Options:
   - `-f, --file <path>`: alternate path to config file.
   - `-e, --env <name>`: environment to stop; if omitted, all environments are targeted.
   - `-d, --daemon`: daemon mode (logs hidden).
+  - `-v, --verbose`: print detailed command output.

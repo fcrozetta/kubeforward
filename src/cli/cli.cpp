@@ -14,6 +14,7 @@
 
 namespace {
 
+// Converts vector<string> argv representation into the char* form expected by cxxopts.
 std::vector<const char*> ToCArgs(const std::vector<std::string>& args) {
   std::vector<const char*> result;
   result.reserve(args.size());
@@ -197,18 +198,32 @@ void PrintPlanVerbose(const std::string& name, const kubeforward::config::Enviro
 struct CommandOptions {
   bool show_help = false;
   bool daemon = false;
+  bool verbose = false;
   std::string config_path = "kubeforward.yaml";
   std::string env_filter;
 };
 
 const char* RunMode(bool daemon) { return daemon ? "daemon" : "foreground"; }
 
+void PrintForwardNames(const kubeforward::config::EnvironmentDefinition& env, const std::string& indent) {
+  std::cout << indent << "forward names:\n";
+  if (env.forwards.empty()) {
+    std::cout << indent << "  <none>\n";
+    return;
+  }
+  for (const auto& forward : env.forwards) {
+    std::cout << indent << "  - " << forward.name << "\n";
+  }
+}
+
+// Shared parser for commands that support the common -f/-e/-d/-v option contract.
 bool ParseCommandOptions(const std::vector<std::string>& args, const std::string& command_name,
                          const std::string& description, CommandOptions& parsed, int& exit_code) {
   cxxopts::Options options(args.front(), description);
   options.add_options()
       ("h,help", "Show help", cxxopts::value<bool>(parsed.show_help)->default_value("false"))
       ("d,daemon", "Run in daemon mode (logs hidden)", cxxopts::value<bool>(parsed.daemon)->default_value("false"))
+      ("v,verbose", "Show detailed command output", cxxopts::value<bool>(parsed.verbose)->default_value("false"))
       ("f,file", "Path to config file (defaults to kubeforward.yaml in current directory)",
           cxxopts::value<std::string>(parsed.config_path)->default_value("kubeforward.yaml"))
       ("e,env", "Environment to target", cxxopts::value<std::string>(parsed.env_filter));
@@ -260,6 +275,7 @@ std::optional<std::string> ResolveSingleEnvironment(const kubeforward::config::C
 }
 
 int RunUpCommand(const std::vector<std::string>& args) {
+  // up always resolves to a single environment target.
   CommandOptions options;
   int parse_exit_code = 0;
   if (!ParseCommandOptions(args, "up", "Start port-forwards for one environment.", options, parse_exit_code)) {
@@ -287,10 +303,14 @@ int RunUpCommand(const std::vector<std::string>& args) {
   std::cout << "  env: " << *env_name << "\n";
   std::cout << "  mode: " << RunMode(options.daemon) << "\n";
   std::cout << "  forwards: " << env_it->second.forwards.size() << "\n";
+  if (options.verbose) {
+    PrintForwardNames(env_it->second, "  ");
+  }
   return 0;
 }
 
 int RunDownCommand(const std::vector<std::string>& args) {
+  // down can target a single environment (--env) or all configured environments.
   CommandOptions options;
   int parse_exit_code = 0;
   if (!ParseCommandOptions(args, "down", "Stop port-forwards for one or all environments.", options,
@@ -316,6 +336,9 @@ int RunDownCommand(const std::vector<std::string>& args) {
     std::cout << "  scope: environment\n";
     std::cout << "  env: " << options.env_filter << "\n";
     std::cout << "  forwards: " << env_it->second.forwards.size() << "\n";
+    if (options.verbose) {
+      PrintForwardNames(env_it->second, "  ");
+    }
     return 0;
   }
 
@@ -326,6 +349,13 @@ int RunDownCommand(const std::vector<std::string>& args) {
   std::cout << "  scope: all environments\n";
   std::cout << "  environments: " << config->environments.size() << "\n";
   std::cout << "  forwards: " << total_forwards << "\n";
+  if (options.verbose) {
+    std::cout << "  environment breakdown:\n";
+    for (const auto& [name, env] : config->environments) {
+      std::cout << "    - " << name << " (" << env.forwards.size() << " forward(s))\n";
+      PrintForwardNames(env, "      ");
+    }
+  }
   return 0;
 }
 
@@ -412,6 +442,7 @@ int RunPlanCommand(const std::vector<std::string>& args) {
 namespace kubeforward {
 
 int run_cli(const std::vector<std::string>& args) {
+  // Top-level dispatcher: commands are mutually exclusive and parsed by first token.
   if (args.empty()) {
     PrintGeneralHelp();
     return 1;

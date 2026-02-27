@@ -7,6 +7,7 @@
 
 namespace kubeforward::config {
 
+/// Kubernetes resource kinds supported as forward targets.
 enum class ResourceKind {
   kPod,
   kDeployment,
@@ -14,21 +15,25 @@ enum class ResourceKind {
   kStatefulSet,
 };
 
+/// Network protocol used by a local->remote mapping.
 enum class PortProtocol {
   kTcp,
   kUdp,
 };
 
+/// Behavior when a detached forward process exits unexpectedly.
 enum class RestartPolicy {
   kFailFast,
   kReplace,
 };
 
+/// File-level metadata for ownership and project labeling.
 struct Metadata {
   std::string project;
   std::optional<std::string> owner;
 };
 
+/// Default target settings inherited by environments and forwards.
 struct TargetDefaults {
   std::optional<std::string> kubeconfig;
   std::optional<std::string> context;
@@ -37,10 +42,12 @@ struct TargetDefaults {
   std::map<std::string, std::string> labels;
 };
 
+/// Safety switches for environment-specific runtime behavior.
 struct EnvironmentGuards {
   bool allow_production = false;
 };
 
+/// How to select a Kubernetes target resource for a forward.
 struct ResourceSelector {
   ResourceKind kind = ResourceKind::kPod;
   std::optional<std::string> name;
@@ -48,6 +55,7 @@ struct ResourceSelector {
   std::optional<std::string> namespace_override;
 };
 
+/// One local->remote port mapping definition.
 struct PortMapping {
   int local_port = 0;
   int remote_port = 0;
@@ -55,11 +63,13 @@ struct PortMapping {
   PortProtocol protocol = PortProtocol::kTcp;
 };
 
+/// Optional command used to verify forward readiness.
 struct HealthCheck {
   std::vector<std::string> exec;
   std::optional<int> timeout_ms;
 };
 
+/// Full runtime definition for one named forward entry.
 struct ForwardDefinition {
   std::string name;
   ResourceSelector resource;
@@ -72,6 +82,7 @@ struct ForwardDefinition {
   std::map<std::string, std::string> annotations;
 };
 
+/// Environment-level forward set plus inherited overrides.
 struct EnvironmentDefinition {
   std::string name;
   std::optional<std::string> extends;
@@ -81,6 +92,7 @@ struct EnvironmentDefinition {
   std::vector<ForwardDefinition> forwards;
 };
 
+/// Canonical in-memory model of a kubeforward config file.
 struct Config {
   int version = 0;
   Metadata metadata;
@@ -89,4 +101,3 @@ struct Config {
 };
 
 }  // namespace kubeforward::config
-

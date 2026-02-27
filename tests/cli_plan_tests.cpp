@@ -140,6 +140,15 @@ TEST_CASE("up supports daemon mode and explicit environment", "[cli]") {
   CHECK(result.out.find("mode: daemon") != std::string::npos);
 }
 
+TEST_CASE("up supports verbose output", "[cli]") {
+  std::vector<std::string> args = {"kubeforward", "up", "--file", Fixture("basic.yaml"), "--env", "dev", "--verbose"};
+  const auto result = RunAndCapture(args);
+
+  REQUIRE(result.exit_code == 0);
+  CHECK(result.out.find("forward names:") != std::string::npos);
+  CHECK(result.out.find("- api") != std::string::npos);
+}
+
 TEST_CASE("down defaults to all environments when --env is omitted", "[cli]") {
   std::vector<std::string> args = {"kubeforward", "down", "--file", Fixture("basic.yaml")};
   const auto result = RunAndCapture(args);
@@ -157,6 +166,16 @@ TEST_CASE("down supports explicit environment and daemon mode", "[cli]") {
   CHECK(result.out.find("scope: environment") != std::string::npos);
   CHECK(result.out.find("env: dev") != std::string::npos);
   CHECK(result.out.find("mode: daemon") != std::string::npos);
+}
+
+TEST_CASE("down supports verbose output", "[cli]") {
+  std::vector<std::string> args = {"kubeforward", "down", "--file", Fixture("basic.yaml"), "--verbose"};
+  const auto result = RunAndCapture(args);
+
+  REQUIRE(result.exit_code == 0);
+  CHECK(result.out.find("environment breakdown:") != std::string::npos);
+  CHECK(result.out.find("- dev (1 forward(s))") != std::string::npos);
+  CHECK(result.out.find("- prod (1 forward(s))") != std::string::npos);
 }
 
 TEST_CASE("commands are mutually exclusive by subcommand position", "[cli]") {
