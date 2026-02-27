@@ -67,21 +67,27 @@ jobs:
           get_sha () {
             local suffix="$1"
             local url="${base}/${TOOL}-${VERSION}-${suffix}.tar.gz.sha256"
-            echo "Fetching ${url}"
+            echo "Fetching ${url}" >&2
             local line
             line="$(curl -fsSL "${url}")"
             local sha
             sha="$(echo "${line}" | awk '{print $1}')"
             if [[ ! "${sha}" =~ ^[0-9a-fA-F]{64}$ ]]; then
-              echo "Bad sha256 for ${suffix}: ${line}"
+              echo "Bad sha256 for ${suffix}: ${line}" >&2
               exit 1
             fi
             echo "${sha}"
           }
 
-          echo "sha_darwin_arm64=$(get_sha darwin-arm64)" >> "$GITHUB_OUTPUT"
-          echo "sha_linux_amd64=$(get_sha linux-amd64)"   >> "$GITHUB_OUTPUT"
-          echo "sha_linux_arm64=$(get_sha linux-arm64)"   >> "$GITHUB_OUTPUT"
+          sha_darwin_arm64="$(get_sha darwin-arm64)"
+          sha_linux_amd64="$(get_sha linux-amd64)"
+          sha_linux_arm64="$(get_sha linux-arm64)"
+
+          {
+            echo "sha_darwin_arm64=${sha_darwin_arm64}"
+            echo "sha_linux_amd64=${sha_linux_amd64}"
+            echo "sha_linux_arm64=${sha_linux_arm64}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Checkout tap repo
         uses: actions/checkout@v4
@@ -105,7 +111,9 @@ jobs:
           test -f "${FORMULA_PATH}"
 
           python3 - << 'PY'
-          import os, re, sys
+          import os
+          import re
+          import sys
 
           path = os.environ["FORMULA_PATH"]
           tool = os.environ["TOOL"]
@@ -113,42 +121,66 @@ jobs:
 
           want = {
             "darwin-arm64": os.environ["SHA_DARWIN_ARM64"],
-            "linux-amd64":  os.environ["SHA_LINUX_AMD64"],
-            "linux-arm64":  os.environ["SHA_LINUX_ARM64"],
+            "linux-amd64": os.environ["SHA_LINUX_AMD64"],
+            "linux-arm64": os.environ["SHA_LINUX_ARM64"],
           }
 
-          s = open(path, "r", encoding="utf-8").read()
+          with open(path, "r", encoding="utf-8") as f:
+            lines = f.read().splitlines()
 
-          # 1) bump version
-          s2, n = re.subn(r'^\s*version\s+"[^"]+"\s*$', f'  version "{version}"', s, flags=re.M)
-          if n != 1:
-            print(f"Expected 1 version line, got {n}", file=sys.stderr)
+          # 1) bump version line
+          version_re = re.compile(r'^\s*version\s+"[^"]+"\s*$')
+          version_idx = [i for i, line in enumerate(lines) if version_re.match(line)]
+          if len(version_idx) != 1:
+            print(f"Expected exactly one version line, got {len(version_idx)}", file=sys.stderr)
             sys.exit(1)
+          lines[version_idx[0]] = f'  version "{version}"'
 
-          # 2) for each suffix, find the url line referencing that suffix, and replace the next sha256 line
-          for suffix, sha in want.items():
-            # match the url line containing ".../#{tool}-#{version}-<suffix>.tar.gz"
-            url_re = re.compile(
-              rf'^(?P<indent>\s*)url\s+"[^"]*/{re.escape(tool)}-#\{{version\}}-{re.escape(suffix)}\.tar\.gz"\s*$',
-              re.M
-            )
-            m = url_re.search(s2)
+          # 2) locate release URLs by suffix and patch the following sha256 line in the same stanza
+          url_re = re.compile(
+            rf'^(?P<indent>\s*)url\s+"[^"]*/{re.escape(tool)}-'
+            r'(?:#\{version\}|[0-9]+\.[0-9]+\.[0-9]+)-'
+            r'(?P<suffix>darwin-arm64|linux-amd64|linux-arm64)\.tar\.gz"\s*$'
+          )
+          sha_re = re.compile(r'^(?P<indent>\s*)sha256\s+"[0-9a-fA-F]{64}"\s*$')
+
+          patched = set()
+          for i, line in enumerate(lines):
+            m = url_re.match(line)
             if not m:
-              print(f"Could not find url stanza for suffix {suffix}", file=sys.stderr)
+              continue
+
+            suffix = m.group("suffix")
+            if suffix not in want:
+              continue
+            if suffix in patched:
+              print(f"Duplicate url stanza for suffix {suffix}", file=sys.stderr)
               sys.exit(1)
 
-            # find sha256 line after that url (within next few lines)
-            start = m.end()
-            sha_re = re.compile(r'^\s*sha256\s+"[0-9a-fA-F]{64}"\s*$', re.M)
-            m2 = sha_re.search(s2, start)
-            if not m2:
+            sha_idx = None
+            for j in range(i + 1, len(lines)):
+              if re.match(r'^\s*url\s+"', lines[j]):
+                break
+              if sha_re.match(lines[j]):
+                sha_idx = j
+                break
+
+            if sha_idx is None:
               print(f"Could not find sha256 after url for suffix {suffix}", file=sys.stderr)
               sys.exit(1)
 
-            # replace that sha line
-            s2 = s2[:m2.start()] + re.sub(r'"[0-9a-fA-F]{64}"', f'"{sha}"', s2[m2.start():m2.end()]) + s2[m2.end():]
+            sha_indent = sha_re.match(lines[sha_idx]).group("indent")
+            lines[sha_idx] = f'{sha_indent}sha256 "{want[suffix]}"'
+            patched.add(suffix)
 
-          open(path, "w", encoding="utf-8").write(s2)
+          missing = sorted(set(want.keys()) - patched)
+          if missing:
+            print(f"Missing url stanzas for suffixes: {', '.join(missing)}", file=sys.stderr)
+            sys.exit(1)
+
+          with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+
           print("Patched", path)
           PY
 
