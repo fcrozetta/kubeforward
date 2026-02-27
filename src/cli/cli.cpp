@@ -1,6 +1,8 @@
 #include "kubeforward/cli.h"
 
 #include <iostream>
+#include <map>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -32,15 +34,23 @@ std::vector<std::string> BuildSubcommandArgs(const std::vector<std::string>& arg
   return sub_args;
 }
 
+const char* AppVersion() { return KF_APP_VERSION; }
+
 void PrintGeneralHelp() {
   std::cout << "kubeforward CLI\n"
             << "\n"
             << "Usage:\n"
             << "  kubeforward <command> [options]\n"
+            << "  kubeforward --version\n"
             << "\n"
             << "Commands:\n"
             << "  plan    Render the normalized port-forward plan.\n"
-            << "  help    Show this message.\n";
+            << "  up      Start port-forwards for one environment.\n"
+            << "  down    Stop port-forwards for one or all environments.\n"
+            << "  help    Show this message.\n"
+            << "\n"
+            << "Global options:\n"
+            << "  --version    Show kubeforward CLI version.\n";
 }
 
 std::string OptionalValueOr(const std::optional<std::string>& value, const std::string& fallback = "<unset>") {
@@ -184,6 +194,141 @@ void PrintPlanVerbose(const std::string& name, const kubeforward::config::Enviro
   std::cout << "\n";
 }
 
+struct CommandOptions {
+  bool show_help = false;
+  bool daemon = false;
+  std::string config_path = "kubeforward.yaml";
+  std::string env_filter;
+};
+
+const char* RunMode(bool daemon) { return daemon ? "daemon" : "foreground"; }
+
+bool ParseCommandOptions(const std::vector<std::string>& args, const std::string& command_name,
+                         const std::string& description, CommandOptions& parsed, int& exit_code) {
+  cxxopts::Options options(args.front(), description);
+  options.add_options()
+      ("h,help", "Show help", cxxopts::value<bool>(parsed.show_help)->default_value("false"))
+      ("d,daemon", "Run in daemon mode (logs hidden)", cxxopts::value<bool>(parsed.daemon)->default_value("false"))
+      ("f,file", "Path to config file (defaults to kubeforward.yaml in current directory)",
+          cxxopts::value<std::string>(parsed.config_path)->default_value("kubeforward.yaml"))
+      ("e,env", "Environment to target", cxxopts::value<std::string>(parsed.env_filter));
+
+  const auto c_args = ToCArgs(args);
+  const int argc = static_cast<int>(c_args.size());
+  char** argv = const_cast<char**>(c_args.data());
+  try {
+    options.parse_positional({});
+    options.parse(argc, argv);
+  } catch (const cxxopts::exceptions::exception& e) {
+    std::cerr << command_name << ": " << e.what() << "\n";
+    exit_code = 1;
+    return false;
+  }
+
+  if (parsed.show_help) {
+    std::cout << options.help() << "\n";
+    exit_code = 0;
+    return false;
+  }
+
+  exit_code = 0;
+  return true;
+}
+
+std::optional<kubeforward::config::Config> LoadConfigForCommand(const std::string& command_name,
+                                                                const std::string& config_path) {
+  auto config_result = kubeforward::config::LoadConfigFromFile(config_path);
+  if (!config_result.config) {
+    std::cerr << command_name << ": failed to load config '" << config_path << "'.\n";
+    for (const auto& error : config_result.errors) {
+      std::cerr << "  - " << error.context << ": " << error.message << "\n";
+    }
+    return std::nullopt;
+  }
+  return config_result.config;
+}
+
+std::optional<std::string> ResolveSingleEnvironment(const kubeforward::config::Config& config,
+                                                    const std::string& env_filter) {
+  if (!env_filter.empty()) {
+    return env_filter;
+  }
+  if (config.environments.empty()) {
+    return std::nullopt;
+  }
+  return config.environments.begin()->first;
+}
+
+int RunUpCommand(const std::vector<std::string>& args) {
+  CommandOptions options;
+  int parse_exit_code = 0;
+  if (!ParseCommandOptions(args, "up", "Start port-forwards for one environment.", options, parse_exit_code)) {
+    return parse_exit_code;
+  }
+
+  const auto config = LoadConfigForCommand("up", options.config_path);
+  if (!config.has_value()) {
+    return 2;
+  }
+
+  const auto env_name = ResolveSingleEnvironment(*config, options.env_filter);
+  if (!env_name.has_value()) {
+    std::cerr << "up: no environments defined in config.\n";
+    return 2;
+  }
+  auto env_it = config->environments.find(*env_name);
+  if (env_it == config->environments.end()) {
+    std::cerr << "up: unknown environment '" << *env_name << "'.\n";
+    return 2;
+  }
+
+  std::cout << "up: starting forwards\n";
+  std::cout << "  file: " << options.config_path << "\n";
+  std::cout << "  env: " << *env_name << "\n";
+  std::cout << "  mode: " << RunMode(options.daemon) << "\n";
+  std::cout << "  forwards: " << env_it->second.forwards.size() << "\n";
+  return 0;
+}
+
+int RunDownCommand(const std::vector<std::string>& args) {
+  CommandOptions options;
+  int parse_exit_code = 0;
+  if (!ParseCommandOptions(args, "down", "Stop port-forwards for one or all environments.", options,
+                           parse_exit_code)) {
+    return parse_exit_code;
+  }
+
+  const auto config = LoadConfigForCommand("down", options.config_path);
+  if (!config.has_value()) {
+    return 2;
+  }
+
+  std::cout << "down: stopping forwards\n";
+  std::cout << "  file: " << options.config_path << "\n";
+  std::cout << "  mode: " << RunMode(options.daemon) << "\n";
+
+  if (!options.env_filter.empty()) {
+    auto env_it = config->environments.find(options.env_filter);
+    if (env_it == config->environments.end()) {
+      std::cerr << "down: unknown environment '" << options.env_filter << "'.\n";
+      return 2;
+    }
+    std::cout << "  scope: environment\n";
+    std::cout << "  env: " << options.env_filter << "\n";
+    std::cout << "  forwards: " << env_it->second.forwards.size() << "\n";
+    return 0;
+  }
+
+  size_t total_forwards = 0;
+  for (const auto& [_, env] : config->environments) {
+    total_forwards += env.forwards.size();
+  }
+  std::cout << "  scope: all environments\n";
+  std::cout << "  environments: " << config->environments.size() << "\n";
+  std::cout << "  forwards: " << total_forwards << "\n";
+  return 0;
+}
+
 int RunPlanCommand(const std::vector<std::string>& args) {
   bool show_help = false;
   bool verbose = false;
@@ -196,7 +341,8 @@ int RunPlanCommand(const std::vector<std::string>& args) {
       ("f,file", "Path to config file (defaults to kubeforward.yaml in current directory)",
           cxxopts::value<std::string>(config_path)->default_value("kubeforward.yaml"))
       ("e,env", "Environment to display", cxxopts::value<std::string>(env_filter))
-      ("v,verbose", "Show detailed plan output", cxxopts::value<bool>(verbose)->default_value("false"));
+      ("v,verbose", "Show detailed plan output",
+       cxxopts::value<bool>(verbose)->default_value("false"));
 
   const auto c_args = ToCArgs(args);
   const int argc = static_cast<int>(c_args.size());
@@ -266,6 +412,11 @@ int RunPlanCommand(const std::vector<std::string>& args) {
 namespace kubeforward {
 
 int run_cli(const std::vector<std::string>& args) {
+  if (args.empty()) {
+    PrintGeneralHelp();
+    return 1;
+  }
+
   if (args.size() < 2) {
     auto sub_args = BuildSubcommandArgs(args, 1, "plan");
     return RunPlanCommand(sub_args);
@@ -277,9 +428,24 @@ int run_cli(const std::vector<std::string>& args) {
     return 0;
   }
 
+  if (command == "--version") {
+    std::cout << AppVersion() << "\n";
+    return 0;
+  }
+
   if (command == "plan") {
     auto sub_args = BuildSubcommandArgs(args, 2, "plan");
     return RunPlanCommand(sub_args);
+  }
+
+  if (command == "up") {
+    auto sub_args = BuildSubcommandArgs(args, 2, "up");
+    return RunUpCommand(sub_args);
+  }
+
+  if (command == "down") {
+    auto sub_args = BuildSubcommandArgs(args, 2, "down");
+    return RunDownCommand(sub_args);
   }
 
   if (!command.empty() && command[0] == '-') {

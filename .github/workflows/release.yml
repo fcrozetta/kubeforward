@@ -47,9 +47,21 @@ jobs:
 
       - name: Build (Release)
         run: make clean && make build BUILD_TYPE=Release BUILD_TARGET=kubeforward
+        env:
+          CMAKE_FLAGS: -DKF_APP_VERSION=${{ github.ref_name }}
+
+      - name: Verify embedded CLI version
+        run: |
+          ACTUAL_VERSION="$(./build/Release/kubeforward --version)"
+          if [[ "${ACTUAL_VERSION}" != "${GITHUB_REF_NAME}" ]]; then
+            echo "Embedded version mismatch: expected '${GITHUB_REF_NAME}', got '${ACTUAL_VERSION}'."
+            exit 1
+          fi
 
       - name: Test (Release)
         run: make test BUILD_TYPE=Release
+        env:
+          CMAKE_FLAGS: -DKF_APP_VERSION=${{ github.ref_name }}
 
       - name: Package unsigned bundle
         run: |

@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "metadata": {
+    "project": "demo-project",
+    "owner": "platform"
+  },
+  "defaults": {
+    "namespace": "default",
+    "bindAddress": "127.0.0.1",
+    "labels": {
+      "team": "core"
+    }
+  },
+  "environments": {
+    "dev": {
+      "description": "Developer environment",
+      "forwards": [
+        {
+          "name": "api",
+          "resource": {
+            "kind": "deployment",
+            "name": "api"
+          },
+          "ports": [
+            {
+              "local": 7000,
+              "remote": 7000
+            }
+          ]
+        }
+      ]
+    },
+    "prod": {
+      "extends": "dev",
+      "guards": {
+        "allowProduction": true
+      },
+      "forwards": [
+        {
+          "name": "prod-api",
+          "resource": {
+            "kind": "pod",
+            "selector": {
+              "app": "api"
+            }
+          },
+          "annotations": {
+            "detach": true,
+            "healthCheck": {
+              "exec": [
+                "./scripts/wait-for-api.sh"
+              ]
+            }
+          },
+          "ports": [
+            {
+              "local": 7001,
+              "remote": 7000
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

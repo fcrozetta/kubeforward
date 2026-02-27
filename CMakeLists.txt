@@ -8,6 +8,8 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+set(KF_APP_VERSION "0.0.0" CACHE STRING "kubeforward CLI version string")
+
 find_package(cxxopts CONFIG REQUIRED)
 find_package(yaml-cpp CONFIG REQUIRED)
 find_package(Catch2 3 CONFIG REQUIRED)
@@ -17,6 +19,7 @@ add_library(kubeforward_lib
   src/config/loader.cpp
 )
 target_include_directories(kubeforward_lib PUBLIC include)
+target_compile_definitions(kubeforward_lib PUBLIC KF_APP_VERSION=\"${KF_APP_VERSION}\")
 target_link_libraries(kubeforward_lib PUBLIC cxxopts::cxxopts yaml-cpp::yaml-cpp)
 
 add_executable(kubeforward
