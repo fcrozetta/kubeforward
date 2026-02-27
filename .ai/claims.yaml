@@ -1,4 +1,4 @@
-last_updated: 2026-02-23T00:00:47Z
+last_updated: 2026-02-27T16:34:17Z
 claims:
   - id: vcpkg-baseline
     statement: "vcpkg manifest baseline is pinned to commit 81ded1ca9f81437a39dc520c653f3006953308f3."
@@ -83,3 +83,29 @@ claims:
       command: "./build/Debug/kubeforward plan --help"
       expected: "--format absent"
     updated_at: 2026-02-23T00:00:47Z
+  - id: cli-command-surface
+    statement: "CLI user commands are plan, up, and down (plus help/version); change is intentionally removed."
+    source: "Owner decision 2026-02-27"
+    validation:
+      type: command
+      command: "./build/Debug/kubeforward help"
+      expected: "Commands include plan/up/down and do not include change"
+    updated_at: 2026-02-27T16:34:17Z
+  - id: cli-up-down-shared-flags
+    statement: "up and down share -f/--file, -e/--env, -d/--daemon, and -v/--verbose options."
+    source: "Owner decision 2026-02-27"
+    validation:
+      type: test
+      target: "tests/cli_plan_tests.cpp"
+      case: "up supports daemon mode and explicit environment; up supports verbose output; down supports explicit environment and daemon mode; down supports verbose output"
+    updated_at: 2026-02-27T16:34:17Z
+  - id: cli-version-contract
+    statement: "--version prints build-time KF_APP_VERSION (default 0.0.0 locally); release workflow injects tag version and verifies binary output matches GITHUB_REF_NAME."
+    source: "Owner decision 2026-02-27"
+    validation:
+      type: doc-check
+      steps:
+        - "Verify CMakeLists.txt sets KF_APP_VERSION cache default to 0.0.0 and passes it as compile definition."
+        - "Verify tests/cli_plan_tests.cpp has case 'version flag prints app version' asserting output equals KF_APP_VERSION."
+        - "Verify .github/workflows/release.yml sets CMAKE_FLAGS=-DKF_APP_VERSION=${{ github.ref_name }} for release build/test and has a step that compares './build/Release/kubeforward --version' with GITHUB_REF_NAME."
+    updated_at: 2026-02-27T16:34:17Z
