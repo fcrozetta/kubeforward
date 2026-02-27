@@ -1,4 +1,4 @@
-last_updated: 2026-02-27T16:34:17Z
+last_updated: 2026-02-27T19:05:42Z
 claims:
   - id: vcpkg-baseline
     statement: "vcpkg manifest baseline is pinned to commit 81ded1ca9f81437a39dc520c653f3006953308f3."
@@ -109,3 +109,27 @@ claims:
         - "Verify tests/cli_plan_tests.cpp has case 'version flag prints app version' asserting output equals KF_APP_VERSION."
         - "Verify .github/workflows/release.yml sets CMAKE_FLAGS=-DKF_APP_VERSION=${{ github.ref_name }} for release build/test and has a step that compares './build/Release/kubeforward --version' with GITHUB_REF_NAME."
     updated_at: 2026-02-27T16:34:17Z
+  - id: runtime-resolved-plan-foundation
+    statement: "Runtime plan resolution is available via runtime::BuildResolvedPlan with extends/defaults merge, environment filtering, and resolved namespace/bindAddress derivation."
+    source: "Owner decision 2026-02-27"
+    validation:
+      type: test
+      target: "tests/runtime_resolved_plan_tests.cpp"
+      case: "resolved plan applies default bindAddress to ports; resolved plan inherits forwards for extends environments without local forwards; resolved plan rejects unknown environment filter"
+    updated_at: 2026-02-27T19:05:42Z
+  - id: runtime-state-store-foundation
+    statement: "Runtime session state is persisted as YAML by config path hash under temp dir (override via KUBEFORWARD_STATE_FILE) and includes session/forward pid metadata."
+    source: "Owner decision 2026-02-27"
+    validation:
+      type: test
+      target: "tests/runtime_state_store_tests.cpp"
+      case: "state store round-trips sessions; state store returns empty state for missing files; default state path is deterministic for config path"
+    updated_at: 2026-02-27T19:05:42Z
+  - id: runtime-process-runner-foundation
+    statement: "Process control abstraction exists with ProcessRunner interface and NoopProcessRunner baseline for pre-kubectl lifecycle wiring."
+    source: "Owner decision 2026-02-27"
+    validation:
+      type: test
+      target: "tests/runtime_process_runner_tests.cpp"
+      case: "noop process runner allocates stable synthetic pids; noop process runner rejects empty argv; noop process runner validates pid on stop"
+    updated_at: 2026-02-27T19:05:42Z

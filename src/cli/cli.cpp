@@ -1,5 +1,9 @@
 #include "kubeforward/cli.h"
 
+#include <algorithm>
+#include <ctime>
+#include <filesystem>
+#include <iomanip>
 #include <iostream>
 #include <map>
 #include <optional>
@@ -11,10 +15,13 @@
 #include <cxxopts.hpp>
 
 #include "kubeforward/config/loader.h"
+#include "kubeforward/runtime/process_runner.h"
+#include "kubeforward/runtime/resolved_plan.h"
+#include "kubeforward/runtime/state_store.h"
 
 namespace {
 
-// Converts vector<string> argv representation into the char* form expected by cxxopts.
+//! Converts vector<string> argv representation into the char* form expected by cxxopts.
 std::vector<const char*> ToCArgs(const std::vector<std::string>& args) {
   std::vector<const char*> result;
   result.reserve(args.size());
@@ -216,7 +223,18 @@ void PrintForwardNames(const kubeforward::config::EnvironmentDefinition& env, co
   }
 }
 
-// Shared parser for commands that support the common -f/-e/-d/-v option contract.
+void PrintForwardNames(const kubeforward::runtime::ResolvedEnvironment& env, const std::string& indent) {
+  std::cout << indent << "forward names:\n";
+  if (env.forwards.empty()) {
+    std::cout << indent << "  <none>\n";
+    return;
+  }
+  for (const auto& forward : env.forwards) {
+    std::cout << indent << "  - " << forward.name << "\n";
+  }
+}
+
+//! Shared parser for commands that support the common -f/-e/-d/-v option contract.
 bool ParseCommandOptions(const std::vector<std::string>& args, const std::string& command_name,
                          const std::string& description, CommandOptions& parsed, int& exit_code) {
   cxxopts::Options options(args.front(), description);
@@ -274,8 +292,45 @@ std::optional<std::string> ResolveSingleEnvironment(const kubeforward::config::C
   return config.environments.begin()->first;
 }
 
+std::string UtcNowString() {
+  const std::time_t now = std::time(nullptr);
+  std::tm utc_tm{};
+#if defined(_WIN32)
+  gmtime_s(&utc_tm, &now);
+#else
+  gmtime_r(&now, &utc_tm);
+#endif
+  std::ostringstream oss;
+  oss << std::put_time(&utc_tm, "%Y-%m-%dT%H:%M:%SZ");
+  return oss.str();
+}
+
+std::string NormalizePath(const std::string& raw_path) {
+  std::error_code ec;
+  const auto absolute = std::filesystem::absolute(raw_path, ec);
+  if (ec) {
+    return raw_path;
+  }
+  return absolute.string();
+}
+
+bool RemoveSessionsForTarget(kubeforward::runtime::RuntimeState& state, const std::string& config_path,
+                             const std::optional<std::string>& env_filter) {
+  const auto before = state.sessions.size();
+  state.sessions.erase(
+      std::remove_if(state.sessions.begin(), state.sessions.end(),
+                     [&](const kubeforward::runtime::ManagedSession& session) {
+                       if (session.config_path != config_path) {
+                         return false;
+                       }
+                       return !env_filter.has_value() || session.environment == *env_filter;
+                     }),
+      state.sessions.end());
+  return before != state.sessions.size();
+}
+
 int RunUpCommand(const std::vector<std::string>& args) {
-  // up always resolves to a single environment target.
+  //! up always resolves to a single environment target.
   CommandOptions options;
   int parse_exit_code = 0;
   if (!ParseCommandOptions(args, "up", "Start port-forwards for one environment.", options, parse_exit_code)) {
@@ -298,19 +353,84 @@ int RunUpCommand(const std::vector<std::string>& args) {
     return 2;
   }
 
+  const auto plan_result =
+      kubeforward::runtime::BuildResolvedPlan(*config, options.config_path, std::optional<std::string>{*env_name});
+  if (!plan_result.ok()) {
+    std::cerr << "up: failed to resolve execution plan.\n";
+    for (const auto& error : plan_result.errors) {
+      std::cerr << "  - " << error.context << ": " << error.message << "\n";
+    }
+    return 2;
+  }
+  const auto& resolved_env = plan_result.plan->environments.at(0);
+  const auto normalized_config_path = NormalizePath(options.config_path);
+  const auto state_path = kubeforward::runtime::DefaultStatePathForConfig(normalized_config_path);
+  const auto state_load = kubeforward::runtime::LoadState(state_path);
+  if (!state_load.ok()) {
+    std::cerr << "up: failed to load runtime state '" << state_path.string() << "'.\n";
+    for (const auto& error : state_load.errors) {
+      std::cerr << "  - " << error << "\n";
+    }
+    return 2;
+  }
+
+  kubeforward::runtime::RuntimeState state = state_load.state;
+  RemoveSessionsForTarget(state, normalized_config_path, std::optional<std::string>{resolved_env.name});
+
+  kubeforward::runtime::NoopProcessRunner runner;
+  kubeforward::runtime::ManagedSession session;
+  session.id = normalized_config_path + "::" + resolved_env.name;
+  session.config_path = normalized_config_path;
+  session.environment = resolved_env.name;
+  session.daemon = options.daemon;
+  session.started_at_utc = UtcNowString();
+
+  for (const auto& forward : resolved_env.forwards) {
+    for (const auto& port : forward.ports) {
+      kubeforward::runtime::StartProcessRequest request;
+      request.cwd = std::filesystem::current_path();
+      request.daemon = options.daemon;
+      request.argv = {"kubectl", "port-forward", forward.name,
+                      std::to_string(port.local_port) + ":" + std::to_string(port.remote_port)};
+
+      std::string start_error;
+      const auto started = runner.Start(request, start_error);
+      if (!started.has_value()) {
+        std::cerr << "up: failed to start forward '" << forward.name << "': " << start_error << "\n";
+        return 2;
+      }
+
+      session.forwards.push_back(kubeforward::runtime::ManagedForwardProcess{
+          .environment = resolved_env.name,
+          .forward_name = forward.name,
+          .local_port = port.local_port,
+          .remote_port = port.remote_port,
+          .pid = started->pid,
+      });
+    }
+  }
+  state.sessions.push_back(session);
+
+  std::string save_error;
+  if (!kubeforward::runtime::SaveState(state_path, state, save_error)) {
+    std::cerr << "up: failed to save runtime state '" << state_path.string() << "': " << save_error << "\n";
+    return 2;
+  }
+
   std::cout << "up: starting forwards\n";
   std::cout << "  file: " << options.config_path << "\n";
   std::cout << "  env: " << *env_name << "\n";
   std::cout << "  mode: " << RunMode(options.daemon) << "\n";
-  std::cout << "  forwards: " << env_it->second.forwards.size() << "\n";
+  std::cout << "  forwards: " << resolved_env.forwards.size() << "\n";
   if (options.verbose) {
-    PrintForwardNames(env_it->second, "  ");
+    std::cout << "  state: " << state_path.string() << "\n";
+    PrintForwardNames(resolved_env, "  ");
   }
   return 0;
 }
 
 int RunDownCommand(const std::vector<std::string>& args) {
-  // down can target a single environment (--env) or all configured environments.
+  //! down can target a single environment (--env) or all configured environments.
   CommandOptions options;
   int parse_exit_code = 0;
   if (!ParseCommandOptions(args, "down", "Stop port-forwards for one or all environments.", options,
@@ -320,6 +440,53 @@ int RunDownCommand(const std::vector<std::string>& args) {
 
   const auto config = LoadConfigForCommand("down", options.config_path);
   if (!config.has_value()) {
+    return 2;
+  }
+
+  const auto normalized_config_path = NormalizePath(options.config_path);
+  const auto state_path = kubeforward::runtime::DefaultStatePathForConfig(normalized_config_path);
+  const auto state_load = kubeforward::runtime::LoadState(state_path);
+  if (!state_load.ok()) {
+    std::cerr << "down: failed to load runtime state '" << state_path.string() << "'.\n";
+    for (const auto& error : state_load.errors) {
+      std::cerr << "  - " << error << "\n";
+    }
+    return 2;
+  }
+  kubeforward::runtime::RuntimeState state = state_load.state;
+  kubeforward::runtime::NoopProcessRunner runner;
+  int stopped_processes = 0;
+  bool stop_failed = false;
+
+  auto stop_session = [&](const kubeforward::runtime::ManagedSession& session) -> bool {
+    if (session.config_path != normalized_config_path) {
+      return false;
+    }
+    if (!options.env_filter.empty() && session.environment != options.env_filter) {
+      return false;
+    }
+    for (const auto& process : session.forwards) {
+      std::string stop_error;
+      if (!runner.Stop(process.pid, stop_error)) {
+        std::cerr << "down: failed to stop pid " << process.pid << ": " << stop_error << "\n";
+        stop_failed = true;
+      }
+      if (!stop_failed) {
+        ++stopped_processes;
+      }
+    }
+    return !stop_failed;
+  };
+
+  state.sessions.erase(std::remove_if(state.sessions.begin(), state.sessions.end(), stop_session), state.sessions.end());
+
+  if (stop_failed) {
+    return 2;
+  }
+
+  std::string save_error;
+  if (!kubeforward::runtime::SaveState(state_path, state, save_error)) {
+    std::cerr << "down: failed to save runtime state '" << state_path.string() << "': " << save_error << "\n";
     return 2;
   }
 
@@ -337,6 +504,8 @@ int RunDownCommand(const std::vector<std::string>& args) {
     std::cout << "  env: " << options.env_filter << "\n";
     std::cout << "  forwards: " << env_it->second.forwards.size() << "\n";
     if (options.verbose) {
+      std::cout << "  state: " << state_path.string() << "\n";
+      std::cout << "  stopped: " << stopped_processes << "\n";
       PrintForwardNames(env_it->second, "  ");
     }
     return 0;
@@ -350,6 +519,8 @@ int RunDownCommand(const std::vector<std::string>& args) {
   std::cout << "  environments: " << config->environments.size() << "\n";
   std::cout << "  forwards: " << total_forwards << "\n";
   if (options.verbose) {
+    std::cout << "  state: " << state_path.string() << "\n";
+    std::cout << "  stopped: " << stopped_processes << "\n";
     std::cout << "  environment breakdown:\n";
     for (const auto& [name, env] : config->environments) {
       std::cout << "    - " << name << " (" << env.forwards.size() << " forward(s))\n";
@@ -442,7 +613,7 @@ int RunPlanCommand(const std::vector<std::string>& args) {
 namespace kubeforward {
 
 int run_cli(const std::vector<std::string>& args) {
-  // Top-level dispatcher: commands are mutually exclusive and parsed by first token.
+  //! Top-level dispatcher: commands are mutually exclusive and parsed by first token.
   if (args.empty()) {
     PrintGeneralHelp();
     return 1;
