@@ -1,68 +1,63 @@
 # kubeforward
 
-Kubeforward is a C++ CLI project built with CMake and dependencies managed through vcpkg (manifest mode).
+Kubeforward is a macOS-first CLI for config-driven Kubernetes port-forward workflows.
 
-## Requirements
+Current implementation status: config loading/validation and `plan` output are implemented; forward execution is not implemented yet.
 
-- CMake 3.16+
-- A C++20-compatible compiler
-- vcpkg (set `VCPKG_ROOT`)
-
-## Dependency management (vcpkg)
-
-This repository uses `vcpkg.json` with a pinned `builtin-baseline` to keep dependency resolution reproducible.
-
-## Build
-
-### Using Make (recommended)
+## Quick Start
 
 ```bash
-export VCPKG_ROOT=/path/to/vcpkg
-make build
-make build BUILD_TYPE=Release
-make build BUILD_TYPE=Release BUILD_TARGET=kubeforward
+kubeforward help
+kubeforward plan --config kubeforward.yaml
+kubeforward plan --config kubeforward.yaml --env dev
 ```
 
-### Using CMake directly
+- `help` shows global command usage.
+- `plan` validates config and renders a normalized environment/forward summary.
+
+## Minimal Config
+
+Create `kubeforward.yaml` at repo root:
+
+```yaml
+version: 1
+metadata:
+  project: demo-project
+defaults:
+  namespace: default
+  bindAddress: 127.0.0.1
+environments:
+  dev:
+    forwards:
+      - name: api
+        resource:
+          kind: deployment
+          name: api
+        ports:
+          - local: 7000
+            remote: 7000
+```
+
+Then run:
 
 ```bash
-cmake -S . -B build/Debug \
-  -DCMAKE_BUILD_TYPE=Debug \
-  -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
-cmake --build build/Debug
+kubeforward plan --env dev
 ```
 
-## Usage
+## Command Reference
 
-```bash
-./build/Debug/kubeforward help
-./build/Debug/kubeforward plan --config kubeforward.yaml --env dev
-```
+- `kubeforward help`
+- `kubeforward plan [--config <path>] [--env <name>] [--format text]`
 
-- `help` prints the global command list.
-- `plan` loads `kubeforward.yaml`, validates it, and lists the forwards for the selected environment (or all environments when `--env` is omitted).
+Notes:
+- Unknown environments fail fast.
+- Schema errors are reported with contextual paths.
+- Duplicate local ports within an environment are rejected.
 
-## Configuration
+## Config Reference
 
-See `docs/config-schema.md` for the canonical `kubeforward.yaml` format, environment overrides, and validation semantics.
+Full schema and validation details: [`docs/config-schema.md`](docs/config-schema.md)
 
-## IDE Support
+## Maintainer Docs
 
-See `docs/vscode.md` for a step-by-step VS Code setup (extensions, CMake/vcpkg integration, and debugging via CodeLLDB).
-
-## Tests
-
-Kubeforward uses [Catch2](https://github.com/catchorg/Catch2) with CTest. After configuring/building, run:
-
-```bash
-ctest --test-dir build/Debug
-```
-
-to execute all suites (config loader + CLI plan). Add new `TEST_CASE`s under `tests/`.
-
-## Commands
-
-- `help`: prints usage and supported commands.
-- `plan`: validates the config and prints a summary of each environment. Options:
-  - `--config <path>`: alternate path to `kubeforward.yaml`.
-  - `--env <name>`: limit output to a single environment.
+Build/test/release/maintenance workflows live in [`docs/maintainer.md`](docs/maintainer.md).
