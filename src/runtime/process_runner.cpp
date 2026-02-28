@@ -35,32 +35,29 @@ bool IsProcessGroupAlive(pid_t pgid) {
   return errno == EPERM;
 }
 
-bool WaitForChildExit(pid_t pid, int timeout_ms) {
-  if (pid <= 0) {
+bool WaitForProcessGroupExit(pid_t pgid, int timeout_ms) {
+  if (pgid <= 0) {
     return true;
   }
 
   const int step_ms = 100;
   int waited_ms = 0;
   while (waited_ms < timeout_ms) {
-    const pid_t wait_result = ::waitpid(pid, nullptr, WNOHANG);
-    if (wait_result == pid) {
+    const pid_t wait_result = ::waitpid(pgid, nullptr, WNOHANG);
+    if (wait_result == pgid) {
       return true;
     }
-    if (wait_result < 0 && errno == ECHILD) {
+    if (!IsProcessGroupAlive(pgid)) {
       return true;
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(step_ms));
     waited_ms += step_ms;
   }
-  const pid_t wait_result = ::waitpid(pid, nullptr, WNOHANG);
-  if (wait_result == pid) {
+  const pid_t wait_result = ::waitpid(pgid, nullptr, WNOHANG);
+  if (wait_result == pgid) {
     return true;
   }
-  if (wait_result < 0 && errno == ECHILD) {
-    return true;
-  }
-  return false;
+  return !IsProcessGroupAlive(pgid);
 }
 
 }  // namespace
@@ -194,7 +191,7 @@ bool PosixProcessRunner::Stop(int pid, std::string& error) {
     return false;
   }
 
-  if (WaitForChildExit(pgid, 3000) || !IsProcessGroupAlive(pgid)) {
+  if (WaitForProcessGroupExit(pgid, 3000)) {
     error.clear();
     return true;
   }
@@ -206,7 +203,7 @@ bool PosixProcessRunner::Stop(int pid, std::string& error) {
     return false;
   }
 
-  if (!WaitForChildExit(pgid, 1000) && IsProcessGroupAlive(pgid)) {
+  if (!WaitForProcessGroupExit(pgid, 1000)) {
     std::ostringstream oss;
     oss << "process group " << pgid << " did not exit after SIGKILL";
     error = oss.str();

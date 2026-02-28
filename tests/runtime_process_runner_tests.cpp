@@ -157,3 +157,39 @@ TEST_CASE("posix process runner keeps foreground launches on inherited stdio", "
   CHECK_FALSE(std::filesystem::exists(log_path));
   CHECK((runner.Stop(started->pid, error) || CleanupProcessGroup(started->pid)));
 }
+
+TEST_CASE("posix process runner stops reattached process groups before reporting success", "[runtime]") {
+  int pid_pipe[2] = {-1, -1};
+  REQUIRE(::pipe(pid_pipe) == 0);
+
+  const pid_t launcher_pid = ::fork();
+  REQUIRE(launcher_pid >= 0);
+
+  if (launcher_pid == 0) {
+    ::close(pid_pipe[0]);
+    kubeforward::runtime::PosixProcessRunner runner;
+    kubeforward::runtime::StartProcessRequest request;
+    request.argv = {"/bin/sh", "-c", "trap '' TERM INT; sleep 30"};
+    request.cwd = std::filesystem::current_path();
+
+    std::string error;
+    const auto started = runner.Start(request, error);
+    const int started_pid = started.has_value() ? started->pid : 0;
+    (void)::write(pid_pipe[1], &started_pid, sizeof(started_pid));
+    _exit(started.has_value() ? 0 : 1);
+  }
+
+  ::close(pid_pipe[1]);
+  int reattached_pid = 0;
+  REQUIRE(::read(pid_pipe[0], &reattached_pid, sizeof(reattached_pid)) == sizeof(reattached_pid));
+  ::close(pid_pipe[0]);
+  REQUIRE(::waitpid(launcher_pid, nullptr, 0) == launcher_pid);
+  REQUIRE(reattached_pid > 0);
+  REQUIRE(::kill(reattached_pid, 0) == 0);
+
+  kubeforward::runtime::PosixProcessRunner runner;
+  std::string error;
+  REQUIRE(runner.Stop(reattached_pid, error));
+  REQUIRE(error.empty());
+  CHECK(::kill(reattached_pid, 0) != 0);
+}

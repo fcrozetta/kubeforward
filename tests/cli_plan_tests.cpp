@@ -19,6 +19,7 @@
 #include <atomic>
 
 #include "kubeforward/cli.h"
+#include "kubeforward/runtime/process_runner.h"
 #include "kubeforward/runtime/state_store.h"
 
 #ifndef KF_SOURCE_DIR
@@ -515,7 +516,8 @@ TEST_CASE("up preserves the running session when replacement kubectl is invalid"
 
   {
     ScopedEnvVar kubectl_bin("KUBEFORWARD_KUBECTL_BIN", kubectl_script.string().c_str());
-    REQUIRE(kubeforward::run_cli({"kubeforward", "up", "--file", config_copy.string(), "--env", "dev"}) == 0);
+    REQUIRE(kubeforward::run_cli({"kubeforward", "up", "--file", config_copy.string(), "--env", "dev", "--daemon"}) ==
+            0);
   }
 
   const auto initial_state = kubeforward::runtime::LoadState(state_file.path());
@@ -562,7 +564,8 @@ TEST_CASE("up restores the original session when replacement preflight fails aft
 
   {
     ScopedEnvVar kubectl_bin("KUBEFORWARD_KUBECTL_BIN", kubectl_script.string().c_str());
-    REQUIRE(kubeforward::run_cli({"kubeforward", "up", "--file", config_path.string(), "--env", "dev"}) == 0);
+    REQUIRE(kubeforward::run_cli({"kubeforward", "up", "--file", config_path.string(), "--env", "dev", "--daemon"}) ==
+            0);
   }
 
   const auto initial_state = kubeforward::runtime::LoadState(state_file.path());
@@ -630,6 +633,69 @@ TEST_CASE("up stops started forwards when state persistence fails", "[cli]") {
   CHECK(WaitForPortClosed(local_port, 6000));
   std::filesystem::permissions(
       state_dir, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace);
+}
+
+TEST_CASE("up keeps foreground sessions attached until the child exits", "[cli]") {
+  ScopedStateFile state_file;
+  const auto kubectl_script = WriteExecutableScript("fake-kubectl-foreground", "#!/bin/sh\nsleep 1\n");
+  const auto config_path = WriteSingleForwardConfig("foreground-up", "dev", FindAvailableLoopbackPort());
+
+  ScopedEnvVar kubectl_bin("KUBEFORWARD_KUBECTL_BIN", kubectl_script.string().c_str());
+  const auto start = std::chrono::steady_clock::now();
+  const int exit_code = kubeforward::run_cli({"kubeforward", "up", "--file", config_path.string(), "--env", "dev"});
+  const auto elapsed_ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+
+  REQUIRE(exit_code == 0);
+  CHECK(elapsed_ms >= 800);
+
+  const auto state = kubeforward::runtime::LoadState(state_file.path());
+  REQUIRE(state.ok());
+  CHECK(state.state.sessions.empty());
+}
+
+TEST_CASE("up refuses to replace sessions that cannot be rolled back safely", "[cli]") {
+  ScopedStateFile state_file;
+  const auto kubectl_script = WriteExecutableScript("fake-kubectl-upgrade", "#!/bin/sh\ntrap 'exit 0' TERM INT\nsleep 30\n");
+  const auto config_path = WriteSingleForwardConfig("upgrade-session", "dev", FindAvailableLoopbackPort());
+
+  kubeforward::runtime::PosixProcessRunner runner;
+  kubeforward::runtime::StartProcessRequest request;
+  request.argv = {kubectl_script.string(), "port-forward", "deployment/api", "7000:80"};
+  request.cwd = std::filesystem::current_path();
+
+  std::string error;
+  const auto started = runner.Start(request, error);
+  REQUIRE(started.has_value());
+  REQUIRE(error.empty());
+
+  kubeforward::runtime::RuntimeState state;
+  kubeforward::runtime::ManagedSession session;
+  session.id = "legacy-session";
+  session.config_path = std::filesystem::absolute(config_path).string();
+  session.environment = "dev";
+  session.daemon = true;
+  session.started_at_utc = "2026-02-28T00:00:00Z";
+  session.forwards.push_back(kubeforward::runtime::ManagedForwardProcess{
+      .environment = "dev",
+      .forward_name = "api",
+      .local_port = 7000,
+      .remote_port = 80,
+      .pid = started->pid,
+  });
+  state.sessions.push_back(session);
+  REQUIRE(kubeforward::runtime::SaveState(state_file.path(), state, error));
+  REQUIRE(error.empty());
+
+  {
+    ScopedEnvVar kubectl_bin("KUBEFORWARD_KUBECTL_BIN", kubectl_script.string().c_str());
+    const auto result = RunAndCapture({"kubeforward", "up", "--file", config_path.string(), "--env", "dev"});
+    REQUIRE(result.exit_code == 2);
+    CHECK(result.err.find("cannot be replaced safely") != std::string::npos);
+  }
+
+  CHECK(IsPidAlive(started->pid));
+  CHECK(runner.Stop(started->pid, error));
 }
 
 TEST_CASE("commands are mutually exclusive by subcommand position", "[cli]") {

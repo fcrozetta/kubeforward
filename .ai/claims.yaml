@@ -1,4 +1,4 @@
-last_updated: 2026-02-28T03:28:00Z
+last_updated: 2026-02-28T16:11:14Z
 claims:
   - id: vcpkg-baseline
     statement: "vcpkg manifest baseline is pinned to commit 81ded1ca9f81437a39dc520c653f3006953308f3."
@@ -126,13 +126,13 @@ claims:
       case: "state store round-trips sessions; state store returns empty state for missing files; default state path is deterministic for config path"
     updated_at: 2026-02-27T19:05:42Z
   - id: runtime-process-runner-foundation
-    statement: "Process control abstraction includes PosixProcessRunner for real child lifecycle management (foreground/daemon start semantics plus signal-based stop of child-led process groups) and NoopProcessRunner for deterministic tests."
+    statement: "Process control abstraction includes PosixProcessRunner for real child lifecycle management (foreground/daemon start semantics plus signal-based stop of child-led process groups, including reattached processes loaded from state) and NoopProcessRunner for deterministic tests."
     source: "Owner decision 2026-02-27"
     validation:
       type: test
       target: "tests/runtime_process_runner_tests.cpp"
-      case: "posix process runner starts and stops a process group; posix process runner writes daemon output to its log file; posix process runner keeps foreground launches on inherited stdio; posix process runner reports exec failures; posix process runner treats missing pid as already stopped; noop process runner allocates stable synthetic pids; noop process runner rejects empty argv; noop process runner validates pid on stop"
-    updated_at: 2026-02-28T03:09:00Z
+      case: "posix process runner starts and stops a process group; posix process runner writes daemon output to its log file; posix process runner keeps foreground launches on inherited stdio; posix process runner stops reattached process groups before reporting success; posix process runner reports exec failures; posix process runner treats missing pid as already stopped; noop process runner allocates stable synthetic pids; noop process runner rejects empty argv; noop process runner validates pid on stop"
+    updated_at: 2026-02-28T16:11:14Z
   - id: runtime-state-store-atomic-write-lock
     statement: "Runtime state save/load uses a companion lock file and atomic temp-file rename to avoid partial writes and reduce concurrent command races."
     source: "Owner decision 2026-02-27"
@@ -142,13 +142,21 @@ claims:
       expected: "LOCK_EX/LOCK_SH with temporary file rename"
     updated_at: 2026-02-27T19:58:36Z
   - id: cli-up-kubectl-argv-preflight
-    statement: "up builds kubectl port-forward argv from resolved runtime plan fields, validates the kubectl executable, preserves existing sessions until replacement start/save succeeds, and requires concrete resource.name targets."
+    statement: "up builds kubectl port-forward argv from resolved runtime plan fields, validates the kubectl executable, preserves existing sessions until replacement start/save succeeds, rejects replacement of legacy sessions that cannot be rolled back safely, and requires concrete resource.name targets."
     source: "Owner decision 2026-02-27"
     validation:
       type: command
-      command: "rg -n \"BuildKubectlPortForwardArgv|ValidateKubectlExecutable|StartManagedSession|RestoreReplacedSessions|PosixProcessRunner\" src/cli/cli.cpp"
-      expected: "kubectl argv + executable validation + transactional replacement path"
-    updated_at: 2026-02-28T03:09:00Z
+      command: "rg -n \"BuildKubectlPortForwardArgv|ValidateKubectlExecutable|ValidateSessionsSupportRollback|StartManagedSession|RestoreReplacedSessions|PosixProcessRunner\" src/cli/cli.cpp"
+      expected: "kubectl argv + executable validation + rollback-safety validation + transactional replacement path"
+    updated_at: 2026-02-28T16:11:14Z
+  - id: cli-up-foreground-contract
+    statement: "up without --daemon stays attached in the foreground until a forward exits or the user interrupts it, then removes the session from runtime state during cleanup."
+    source: "Owner decision 2026-02-28"
+    validation:
+      type: test
+      target: "tests/cli_plan_tests.cpp"
+      case: "up keeps foreground sessions attached until the child exits"
+    updated_at: 2026-02-28T16:11:14Z
   - id: runtime-session-rollback-snapshot
     statement: "Runtime session state persists restart metadata (argv/cwd/log path) so failed replacements roll back to the original stopped session rather than the current config."
     source: "Owner decision 2026-02-28"

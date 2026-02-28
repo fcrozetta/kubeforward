@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <chrono>
 #include <cstring>
 #include <cstdlib>
 #include <ctime>
@@ -23,6 +24,8 @@
 #include <netinet/in.h>
 #include <signal.h>
 #include <sys/socket.h>
+#include <sys/wait.h>
+#include <thread>
 #include <unistd.h>
 
 #include "kubeforward/config/loader.h"
@@ -55,6 +58,10 @@ std::vector<std::string> BuildSubcommandArgs(const std::vector<std::string>& arg
 }
 
 const char* AppVersion() { return KF_APP_VERSION; }
+
+volatile sig_atomic_t g_foreground_signal = 0;
+
+void HandleForegroundSignal(int signal_number) { g_foreground_signal = signal_number; }
 
 void PrintGeneralHelp() {
   std::cout << "kubeforward CLI\n"
@@ -709,6 +716,32 @@ bool BuildPreparedLaunchesFromSession(const kubeforward::runtime::ManagedSession
   return true;
 }
 
+bool ValidateSessionSupportsRollback(const kubeforward::runtime::ManagedSession& session, std::string& error) {
+  for (const auto& forward : session.forwards) {
+    if (!forward.argv.empty()) {
+      continue;
+    }
+    error = "existing session '" + session.id + "' cannot be replaced safely because forward '" + forward.forward_name +
+            "' was created by an older runtime state format without restart metadata; run 'down' first";
+    return false;
+  }
+
+  error.clear();
+  return true;
+}
+
+bool ValidateSessionsSupportRollback(const std::vector<kubeforward::runtime::ManagedSession>& sessions,
+                                     std::string& error) {
+  for (const auto& session : sessions) {
+    if (!ValidateSessionSupportsRollback(session, error)) {
+      return false;
+    }
+  }
+
+  error.clear();
+  return true;
+}
+
 void StopSessionProcesses(const kubeforward::runtime::ManagedSession& session, kubeforward::runtime::ProcessRunner& runner,
                           const std::string& error_prefix, bool& stop_failed, int& stopped_processes) {
   for (const auto& process : session.forwards) {
@@ -842,6 +875,101 @@ bool RestoreReplacedSessions(const std::filesystem::path& state_path, const kube
   return true;
 }
 
+struct ScopedSignalHandler {
+  explicit ScopedSignalHandler(int signal_number) : signal_number_(signal_number) {
+    struct sigaction action {};
+    action.sa_handler = HandleForegroundSignal;
+    sigemptyset(&action.sa_mask);
+    action.sa_flags = 0;
+    installed_ = (::sigaction(signal_number_, &action, &previous_) == 0);
+  }
+
+  ~ScopedSignalHandler() {
+    if (installed_) {
+      (void)::sigaction(signal_number_, &previous_, nullptr);
+    }
+  }
+
+  int signal_number_;
+  bool installed_ = false;
+  struct sigaction previous_ {};
+};
+
+int ExitCodeFromSignal(int signal_number) {
+  switch (signal_number) {
+    case SIGINT:
+      return 130;
+    case SIGTERM:
+      return 143;
+    default:
+      return 2;
+  }
+}
+
+std::string DescribeWaitStatus(int status) {
+  if (WIFEXITED(status)) {
+    return "exit code " + std::to_string(WEXITSTATUS(status));
+  }
+  if (WIFSIGNALED(status)) {
+    return "signal " + std::to_string(WTERMSIG(status));
+  }
+  return "unknown status";
+}
+
+int RunForegroundSession(const std::filesystem::path& state_path, const kubeforward::runtime::RuntimeState& state_snapshot,
+                         kubeforward::runtime::ManagedSession& session, kubeforward::runtime::ProcessRunner& runner) {
+  g_foreground_signal = 0;
+  ScopedSignalHandler sigint_handler(SIGINT);
+  ScopedSignalHandler sigterm_handler(SIGTERM);
+
+  const int poll_interval_ms = 100;
+  int exited_pid = 0;
+  int exited_status = 0;
+  std::string exited_forward_name;
+  while (g_foreground_signal == 0) {
+    for (const auto& forward : session.forwards) {
+      int status = 0;
+      const pid_t wait_result = ::waitpid(forward.pid, &status, WNOHANG);
+      if (wait_result == forward.pid) {
+        exited_pid = forward.pid;
+        exited_status = status;
+        exited_forward_name = forward.forward_name;
+        break;
+      }
+    }
+    if (exited_pid != 0) {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(poll_interval_ms));
+  }
+
+  StopStartedSession(session, runner);
+
+  auto cleaned_state = state_snapshot;
+  RemoveMatchingSessions(cleaned_state, session.config_path, session.environment);
+
+  std::string save_error;
+  if (!kubeforward::runtime::SaveState(state_path, cleaned_state, save_error)) {
+    std::cerr << "up: failed to save runtime state '" << state_path.string() << "': " << save_error << "\n";
+    return 2;
+  }
+
+  if (g_foreground_signal != 0) {
+    return ExitCodeFromSignal(g_foreground_signal);
+  }
+
+  if (WIFEXITED(exited_status) && WEXITSTATUS(exited_status) == 0) {
+    return 0;
+  }
+
+  std::cerr << "up: foreground forward";
+  if (!exited_forward_name.empty()) {
+    std::cerr << " '" << exited_forward_name << "'";
+  }
+  std::cerr << " exited with " << DescribeWaitStatus(exited_status) << "\n";
+  return 2;
+}
+
 int RunUpCommand(const std::vector<std::string>& args) {
   //! up always resolves to a single environment target.
   CommandOptions options;
@@ -893,6 +1021,14 @@ int RunUpCommand(const std::vector<std::string>& args) {
   std::vector<kubeforward::runtime::ManagedSession> existing_sessions;
   for (const auto* session : MatchingSessions(state, normalized_config_path, resolved_env.name)) {
     existing_sessions.push_back(*session);
+  }
+
+  if (!existing_sessions.empty()) {
+    std::string rollback_validation_error;
+    if (!ValidateSessionsSupportRollback(existing_sessions, rollback_validation_error)) {
+      std::cerr << "up: " << rollback_validation_error << "\n";
+      return 2;
+    }
   }
 
   std::vector<PreparedForwardLaunch> launches;
@@ -1002,6 +1138,11 @@ int RunUpCommand(const std::vector<std::string>& args) {
     std::cout << "  logs: " << DefaultLogsDirectoryForConfig(normalized_config_path).string() << "\n";
     PrintForwardNames(resolved_env, "  ");
   }
+
+  if (!options.daemon && !UseNoopRunner()) {
+    return RunForegroundSession(state_path, next_state, session, *runner);
+  }
+
   return 0;
 }
 
