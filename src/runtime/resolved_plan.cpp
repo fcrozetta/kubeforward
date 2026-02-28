@@ -40,22 +40,25 @@ void AddError(std::vector<PlanBuildError>& errors, const std::string& context, c
   errors.push_back(PlanBuildError{context, message});
 }
 
-std::vector<ResolvedForward> ResolveForwards(const std::string& env_name, const config::EnvironmentDefinition& env,
+std::vector<config::ForwardDefinition> ResolveForwardDefinitions(const std::string& env_name, const config::Config& config) {
+  const auto& env = config.environments.at(env_name);
+  if (!env.forwards.empty()) {
+    return env.forwards;
+  }
+  if (env.extends.has_value() && config.environments.count(*env.extends) == 1) {
+    return ResolveForwardDefinitions(*env.extends, config);
+  }
+  return {};
+}
+
+std::vector<ResolvedForward> ResolveForwards(const std::string& env_name,
+                                             const std::vector<config::ForwardDefinition>& forward_definitions,
                                              const config::TargetDefaults& settings,
-                                             const std::vector<ResolvedForward>& inherited_forwards,
                                              std::vector<PlanBuildError>& errors) {
   std::vector<ResolvedForward> forwards;
-  if (env.forwards.empty()) {
-    forwards = inherited_forwards;
-    for (auto& forward : forwards) {
-      forward.environment = env_name;
-    }
-    return forwards;
-  }
-
-  forwards.reserve(env.forwards.size());
-  for (size_t i = 0; i < env.forwards.size(); ++i) {
-    const auto& source = env.forwards[i];
+  forwards.reserve(forward_definitions.size());
+  for (size_t i = 0; i < forward_definitions.size(); ++i) {
+    const auto& source = forward_definitions[i];
     const std::string context = "environments." + env_name + ".forwards[" + std::to_string(i) + "]";
 
     ResolvedForward forward;
@@ -115,25 +118,24 @@ std::optional<ResolvedEnvironment> ResolveEnvironmentRecursive(
   visiting.insert(env_name);
   config::TargetDefaults effective_settings = config.defaults;
   config::EnvironmentGuards effective_guards = {};
-  std::vector<ResolvedForward> inherited_forwards;
 
   if (env.extends.has_value()) {
     const auto parent = ResolveEnvironmentRecursive(*env.extends, config, cache, visiting, errors);
     if (parent.has_value()) {
       effective_settings = parent->settings;
       effective_guards = parent->guards;
-      inherited_forwards = parent->forwards;
     }
   }
 
   effective_settings = MergeTargetDefaults(effective_settings, env.settings);
   effective_guards = MergeEnvironmentGuards(effective_guards, env.guards);
+  const auto forward_definitions = ResolveForwardDefinitions(env_name, config);
 
   ResolvedEnvironment resolved;
   resolved.name = env_name;
   resolved.settings = effective_settings;
   resolved.guards = effective_guards;
-  resolved.forwards = ResolveForwards(env_name, env, effective_settings, inherited_forwards, errors);
+  resolved.forwards = ResolveForwards(env_name, forward_definitions, effective_settings, errors);
 
   visiting.erase(env_name);
   cache.emplace(env_name, resolved);

@@ -21,6 +21,12 @@ std::string Fixture(const std::string& name) {
 
 std::filesystem::path FixtureDir() { return std::string(KF_SOURCE_DIR) + "/tests/fixtures"; }
 
+std::filesystem::path TempDir() {
+  const auto base = std::filesystem::temp_directory_path() / "kubeforward-cli-tests";
+  std::filesystem::create_directories(base);
+  return base;
+}
+
 struct CliResult {
   int exit_code = 0;
   std::string out;
@@ -82,6 +88,26 @@ class ScopedEnvVar {
   bool had_original_ = false;
   std::string original_;
 };
+
+class ScopedStateFile {
+ public:
+  ScopedStateFile() : path_(TempDir() / ("state-" + std::to_string(std::rand()) + ".yaml")),
+                      env_("KUBEFORWARD_STATE_FILE", path_.string().c_str()) {
+    std::filesystem::remove(path_);
+  }
+
+  ~ScopedStateFile() { std::filesystem::remove(path_); }
+
+  const std::filesystem::path& path() const { return path_; }
+
+ private:
+  std::filesystem::path path_;
+  ScopedEnvVar env_;
+};
+
+std::filesystem::path TempConfigCopyPath(const std::string& stem) {
+  return TempDir() / (stem + "-" + std::to_string(std::rand()) + ".yaml");
+}
 
 CliResult RunAndCapture(const std::vector<std::string>& args) {
   ScopedStreamCapture capture;
@@ -150,6 +176,7 @@ TEST_CASE("version flag prints app version", "[cli]") {
 
 TEST_CASE("up defaults to the first environment when --env is omitted", "[cli]") {
   ScopedEnvVar noop_runner("KUBEFORWARD_USE_NOOP_RUNNER", "1");
+  ScopedStateFile state_file;
   std::vector<std::string> args = {"kubeforward", "up", "--file", Fixture("basic.yaml")};
   const auto result = RunAndCapture(args);
 
@@ -160,6 +187,7 @@ TEST_CASE("up defaults to the first environment when --env is omitted", "[cli]")
 
 TEST_CASE("up supports daemon mode and explicit environment", "[cli]") {
   ScopedEnvVar noop_runner("KUBEFORWARD_USE_NOOP_RUNNER", "1");
+  ScopedStateFile state_file;
   std::vector<std::string> args = {"kubeforward", "up", "--file", Fixture("basic.yaml"), "--env", "dev", "--daemon"};
   const auto result = RunAndCapture(args);
 
@@ -170,6 +198,7 @@ TEST_CASE("up supports daemon mode and explicit environment", "[cli]") {
 
 TEST_CASE("up supports verbose output", "[cli]") {
   ScopedEnvVar noop_runner("KUBEFORWARD_USE_NOOP_RUNNER", "1");
+  ScopedStateFile state_file;
   std::vector<std::string> args = {"kubeforward", "up", "--file", Fixture("basic.yaml"), "--env", "dev", "--verbose"};
   const auto result = RunAndCapture(args);
 
@@ -180,8 +209,12 @@ TEST_CASE("up supports verbose output", "[cli]") {
 
 TEST_CASE("down defaults to all environments when --env is omitted", "[cli]") {
   ScopedEnvVar noop_runner("KUBEFORWARD_USE_NOOP_RUNNER", "1");
-  std::vector<std::string> args = {"kubeforward", "down", "--file", Fixture("basic.yaml")};
-  const auto result = RunAndCapture(args);
+  ScopedStateFile state_file;
+
+  REQUIRE(kubeforward::run_cli({"kubeforward", "up", "--file", Fixture("basic.yaml"), "--env", "dev"}) == 0);
+  REQUIRE(kubeforward::run_cli({"kubeforward", "up", "--file", Fixture("basic.yaml"), "--env", "prod"}) == 0);
+
+  const auto result = RunAndCapture({"kubeforward", "down", "--file", Fixture("basic.yaml")});
 
   REQUIRE(result.exit_code == 0);
   CHECK(result.out.find("scope: all environments") != std::string::npos);
@@ -190,8 +223,11 @@ TEST_CASE("down defaults to all environments when --env is omitted", "[cli]") {
 
 TEST_CASE("down supports explicit environment and daemon mode", "[cli]") {
   ScopedEnvVar noop_runner("KUBEFORWARD_USE_NOOP_RUNNER", "1");
-  std::vector<std::string> args = {"kubeforward", "down", "--file", Fixture("basic.yaml"), "-e", "dev", "-d"};
-  const auto result = RunAndCapture(args);
+  ScopedStateFile state_file;
+
+  REQUIRE(kubeforward::run_cli({"kubeforward", "up", "--file", Fixture("basic.yaml"), "--env", "dev"}) == 0);
+
+  const auto result = RunAndCapture({"kubeforward", "down", "--file", Fixture("basic.yaml"), "-e", "dev", "-d"});
 
   REQUIRE(result.exit_code == 0);
   CHECK(result.out.find("scope: environment") != std::string::npos);
@@ -201,13 +237,35 @@ TEST_CASE("down supports explicit environment and daemon mode", "[cli]") {
 
 TEST_CASE("down supports verbose output", "[cli]") {
   ScopedEnvVar noop_runner("KUBEFORWARD_USE_NOOP_RUNNER", "1");
-  std::vector<std::string> args = {"kubeforward", "down", "--file", Fixture("basic.yaml"), "--verbose"};
-  const auto result = RunAndCapture(args);
+  ScopedStateFile state_file;
+
+  REQUIRE(kubeforward::run_cli({"kubeforward", "up", "--file", Fixture("basic.yaml"), "--env", "dev"}) == 0);
+  REQUIRE(kubeforward::run_cli({"kubeforward", "up", "--file", Fixture("basic.yaml"), "--env", "prod"}) == 0);
+
+  const auto result = RunAndCapture({"kubeforward", "down", "--file", Fixture("basic.yaml"), "--verbose"});
 
   REQUIRE(result.exit_code == 0);
   CHECK(result.out.find("environment breakdown:") != std::string::npos);
-  CHECK(result.out.find("- dev (1 forward(s))") != std::string::npos);
-  CHECK(result.out.find("- prod (1 forward(s))") != std::string::npos);
+  CHECK(result.out.find("environments: 2") != std::string::npos);
+  CHECK(result.out.find("stopped: 2") != std::string::npos);
+}
+
+TEST_CASE("down stops tracked sessions when config is missing", "[cli]") {
+  ScopedEnvVar noop_runner("KUBEFORWARD_USE_NOOP_RUNNER", "1");
+  ScopedStateFile state_file;
+
+  const auto config_copy = TempConfigCopyPath("down-missing-config");
+  std::filesystem::copy_file(Fixture("basic.yaml"), config_copy, std::filesystem::copy_options::overwrite_existing);
+
+  REQUIRE(kubeforward::run_cli({"kubeforward", "up", "--file", config_copy.string(), "--env", "dev"}) == 0);
+  std::filesystem::remove(config_copy);
+
+  const auto result = RunAndCapture({"kubeforward", "down", "--file", config_copy.string(), "--env", "dev", "--verbose"});
+
+  REQUIRE(result.exit_code == 0);
+  CHECK(result.out.find("scope: environment") != std::string::npos);
+  CHECK(result.out.find("env: dev") != std::string::npos);
+  CHECK(result.out.find("stopped: 1") != std::string::npos);
 }
 
 TEST_CASE("commands are mutually exclusive by subcommand position", "[cli]") {

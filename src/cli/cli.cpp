@@ -528,6 +528,24 @@ std::string NormalizePath(const std::string& raw_path) {
   return absolute.string();
 }
 
+size_t CountSessionForwards(const kubeforward::runtime::ManagedSession& session) { return session.forwards.size(); }
+
+std::vector<const kubeforward::runtime::ManagedSession*> MatchingSessions(
+    const kubeforward::runtime::RuntimeState& state, const std::string& normalized_config_path,
+    const std::string& env_filter) {
+  std::vector<const kubeforward::runtime::ManagedSession*> matches;
+  for (const auto& session : state.sessions) {
+    if (session.config_path != normalized_config_path) {
+      continue;
+    }
+    if (!env_filter.empty() && session.environment != env_filter) {
+      continue;
+    }
+    matches.push_back(&session);
+  }
+  return matches;
+}
+
 int RunUpCommand(const std::vector<std::string>& args) {
   //! up always resolves to a single environment target.
   CommandOptions options;
@@ -688,11 +706,6 @@ int RunDownCommand(const std::vector<std::string>& args) {
     return parse_exit_code;
   }
 
-  const auto config = LoadConfigForCommand("down", options.config_path);
-  if (!config.has_value()) {
-    return 2;
-  }
-
   const auto normalized_config_path = NormalizePath(options.config_path);
   const auto state_path = kubeforward::runtime::DefaultStatePathForConfig(normalized_config_path);
   const auto state_load = kubeforward::runtime::LoadState(state_path);
@@ -704,6 +717,14 @@ int RunDownCommand(const std::vector<std::string>& args) {
     return 2;
   }
   kubeforward::runtime::RuntimeState state = state_load.state;
+  const auto matched_sessions = MatchingSessions(state, normalized_config_path, options.env_filter);
+  size_t matched_forwards = 0;
+  std::set<std::string> matched_environments;
+  for (const auto* session : matched_sessions) {
+    matched_forwards += CountSessionForwards(*session);
+    matched_environments.insert(session->environment);
+  }
+
   auto runner = MakeProcessRunner();
   int stopped_processes = 0;
   bool stop_failed = false;
@@ -746,36 +767,32 @@ int RunDownCommand(const std::vector<std::string>& args) {
   std::cout << "  mode: " << RunMode(options.daemon) << "\n";
 
   if (!options.env_filter.empty()) {
-    auto env_it = config->environments.find(options.env_filter);
-    if (env_it == config->environments.end()) {
-      std::cerr << "down: unknown environment '" << options.env_filter << "'.\n";
-      return 2;
-    }
     std::cout << "  scope: environment\n";
     std::cout << "  env: " << options.env_filter << "\n";
-    std::cout << "  forwards: " << env_it->second.forwards.size() << "\n";
+    std::cout << "  forwards: " << matched_forwards << "\n";
     if (options.verbose) {
       std::cout << "  state: " << state_path.string() << "\n";
       std::cout << "  stopped: " << stopped_processes << "\n";
-      PrintForwardNames(env_it->second, "  ");
+      std::cout << "  sessions: " << matched_sessions.size() << "\n";
     }
     return 0;
   }
 
-  size_t total_forwards = 0;
-  for (const auto& [_, env] : config->environments) {
-    total_forwards += env.forwards.size();
-  }
   std::cout << "  scope: all environments\n";
-  std::cout << "  environments: " << config->environments.size() << "\n";
-  std::cout << "  forwards: " << total_forwards << "\n";
+  std::cout << "  environments: " << matched_environments.size() << "\n";
+  std::cout << "  forwards: " << matched_forwards << "\n";
   if (options.verbose) {
     std::cout << "  state: " << state_path.string() << "\n";
     std::cout << "  stopped: " << stopped_processes << "\n";
     std::cout << "  environment breakdown:\n";
-    for (const auto& [name, env] : config->environments) {
-      std::cout << "    - " << name << " (" << env.forwards.size() << " forward(s))\n";
-      PrintForwardNames(env, "      ");
+    for (const auto& env_name : matched_environments) {
+      size_t env_forward_count = 0;
+      for (const auto* session : matched_sessions) {
+        if (session->environment == env_name) {
+          env_forward_count += CountSessionForwards(*session);
+        }
+      }
+      std::cout << "    - " << env_name << " (" << env_forward_count << " forward(s))\n";
     }
   }
   return 0;

@@ -53,6 +53,26 @@ TEST_CASE("resolved plan inherits forwards for extends environments without loca
   CHECK(env.forwards.at(0).name == "base-api");
 }
 
+TEST_CASE("resolved plan reapplies child settings to inherited forwards", "[runtime]") {
+  const auto load_result = kubeforward::config::LoadConfigFromFile(Fixture("extends_with_child_overrides.yaml"));
+  REQUIRE(load_result.ok());
+  REQUIRE(load_result.config.has_value());
+
+  const auto plan_result =
+      kubeforward::runtime::BuildResolvedPlan(*load_result.config, Fixture("extends_with_child_overrides.yaml"),
+                                              std::optional<std::string>{"child"});
+  REQUIRE(plan_result.ok());
+  REQUIRE(plan_result.plan.has_value());
+  REQUIRE(plan_result.plan->environments.size() == 1);
+
+  const auto& env = plan_result.plan->environments.at(0);
+  REQUIRE(env.forwards.size() == 1);
+  CHECK(env.forwards.at(0).namespace_name == "child-ns");
+  REQUIRE(env.forwards.at(0).ports.size() == 1);
+  REQUIRE(env.forwards.at(0).ports.at(0).bind_address.has_value());
+  CHECK(env.forwards.at(0).ports.at(0).bind_address.value() == "127.0.0.2");
+}
+
 TEST_CASE("resolved plan rejects unknown environment filter", "[runtime]") {
   const auto load_result = kubeforward::config::LoadConfigFromFile(Fixture("basic.yaml"));
   REQUIRE(load_result.ok());
