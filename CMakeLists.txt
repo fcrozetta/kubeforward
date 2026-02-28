@@ -8,6 +8,8 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+set(KF_APP_VERSION "0.0.0" CACHE STRING "kubeforward CLI version string")
+
 find_package(cxxopts CONFIG REQUIRED)
 find_package(yaml-cpp CONFIG REQUIRED)
 find_package(Catch2 3 CONFIG REQUIRED)
@@ -15,8 +17,12 @@ find_package(Catch2 3 CONFIG REQUIRED)
 add_library(kubeforward_lib
   src/cli/cli.cpp
   src/config/loader.cpp
+  src/runtime/process_runner.cpp
+  src/runtime/resolved_plan.cpp
+  src/runtime/state_store.cpp
 )
 target_include_directories(kubeforward_lib PUBLIC include)
+target_compile_definitions(kubeforward_lib PUBLIC KF_APP_VERSION=\"${KF_APP_VERSION}\")
 target_link_libraries(kubeforward_lib PUBLIC cxxopts::cxxopts yaml-cpp::yaml-cpp)
 
 add_executable(kubeforward
@@ -27,6 +33,9 @@ target_link_libraries(kubeforward PRIVATE kubeforward_lib)
 add_executable(kubeforward_tests
   tests/cli_plan_tests.cpp
   tests/config_loader_tests.cpp
+  tests/runtime_process_runner_tests.cpp
+  tests/runtime_resolved_plan_tests.cpp
+  tests/runtime_state_store_tests.cpp
 )
 target_link_libraries(kubeforward_tests PRIVATE kubeforward_lib Catch2::Catch2WithMain)
 target_compile_definitions(kubeforward_tests PRIVATE KF_SOURCE_DIR=\"${CMAKE_SOURCE_DIR}\")

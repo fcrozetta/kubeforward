@@ -13,7 +13,59 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  pre-release-kind-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install vcpkg
+        run: |
+          VCPKG_ROOT="${RUNNER_TEMP}/vcpkg"
+          VCPKG_COMMIT="$(awk -F'\"' '/builtin-baseline/ { print $4 }' vcpkg.json)"
+          git clone --depth 1 https://github.com/microsoft/vcpkg.git "${VCPKG_ROOT}"
+          git -C "${VCPKG_ROOT}" fetch --depth 1 origin "${VCPKG_COMMIT}"
+          git -C "${VCPKG_ROOT}" checkout "${VCPKG_COMMIT}"
+          "${VCPKG_ROOT}/bootstrap-vcpkg.sh" -disableMetrics
+          echo "VCPKG_ROOT=${VCPKG_ROOT}" >> "${GITHUB_ENV}"
+
+      - name: Install kind
+        run: |
+          curl -fsSL -o ./kind "https://kind.sigs.k8s.io/dl/v0.31.0/kind-linux-amd64"
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+
+      - name: Install kubectl
+        run: |
+          curl -fsSL -o ./kubectl "https://dl.k8s.io/release/v1.35.2/bin/linux/amd64/kubectl"
+          chmod +x ./kubectl
+          sudo mv ./kubectl /usr/local/bin/kubectl
+
+      - name: Build (Release)
+        run: make clean && make build BUILD_TYPE=Release BUILD_TARGET=kubeforward
+        env:
+          CMAKE_FLAGS: -DKF_APP_VERSION=${{ github.ref_name }}
+
+      - name: Test (Release)
+        run: make test BUILD_TYPE=Release
+        env:
+          CMAKE_FLAGS: -DKF_APP_VERSION=${{ github.ref_name }}
+
+      - name: Run kind smoke test
+        run: make test-e2e BUILD_TYPE=Release
+        env:
+          KUBEFORWARD_KIND_SMOKE_WORKDIR: ${{ github.workspace }}/out/kind-smoke
+
+      - name: Upload kind smoke artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kind-smoke-artifacts
+          path: out/kind-smoke
+
   build-macos-unsigned:
+    needs:
+      - pre-release-kind-smoke
     runs-on: macos-latest
     steps:
       - name: Checkout
@@ -47,9 +99,21 @@ jobs:
 
       - name: Build (Release)
         run: make clean && make build BUILD_TYPE=Release BUILD_TARGET=kubeforward
+        env:
+          CMAKE_FLAGS: -DKF_APP_VERSION=${{ github.ref_name }}
+
+      - name: Verify embedded CLI version
+        run: |
+          ACTUAL_VERSION="$(./build/Release/kubeforward --version)"
+          if [[ "${ACTUAL_VERSION}" != "${GITHUB_REF_NAME}" ]]; then
+            echo "Embedded version mismatch: expected '${GITHUB_REF_NAME}', got '${ACTUAL_VERSION}'."
+            exit 1
+          fi
 
       - name: Test (Release)
         run: make test BUILD_TYPE=Release
+        env:
+          CMAKE_FLAGS: -DKF_APP_VERSION=${{ github.ref_name }}
 
       - name: Package unsigned bundle
         run: |

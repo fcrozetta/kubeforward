@@ -1,4 +1,4 @@
-last_updated: 2026-02-21T21:58:01Z
+last_updated: 2026-02-27T22:45:09Z
 claims:
   - id: vcpkg-baseline
     statement: "vcpkg manifest baseline is pinned to commit 81ded1ca9f81437a39dc520c653f3006953308f3."
@@ -26,3 +26,154 @@ claims:
         - "Verify .github/workflows/release.yml has 'Publish unsigned GitHub Release (pre-1.0)' conditioned on tags starting with 0."
         - "Verify sign-notarize-release job is gated to non-0.* tags."
     updated_at: 2026-02-21T21:58:01Z
+  - id: cli-verbose-convention
+    statement: "CLI commands should include -v/--verbose where it adds operational detail, without requiring a separate owner reminder."
+    source: "Owner decision 2026-02-22"
+    validation:
+      type: doc-check
+      steps:
+        - "When adding a new user-facing command, verify whether verbose output is meaningful and implement -v/--verbose by default when it is."
+        - "Update README command options and CLI tests to cover verbose behavior."
+    updated_at: 2026-02-22T18:04:18Z
+  - id: cli-default-config-file
+    statement: "CLI defaults to loading kubeforward.yaml from the current working directory when no file flag is provided."
+    source: "Owner decision 2026-02-22"
+    validation:
+      type: command
+      command: "./build/Debug/kubeforward plan --help"
+      expected: "defaults to kubeforward.yaml in current directory"
+    updated_at: 2026-02-23T00:00:47Z
+  - id: cli-file-flag-contract
+    statement: "Config file override flag is -f/--file only; --config is not supported."
+    source: "Owner decision 2026-02-22"
+    validation:
+      type: command
+      command: "./build/Debug/kubeforward plan --help"
+      expected: "-f, --file"
+    updated_at: 2026-02-23T00:00:47Z
+  - id: cli-default-subcommand-plan
+    statement: "Running kubeforward with no explicit subcommand defaults to plan."
+    source: "Owner decision 2026-02-22"
+    validation:
+      type: test
+      target: "tests/cli_plan_tests.cpp"
+      case: "default command is plan when no subcommand is provided"
+    updated_at: 2026-02-23T00:00:47Z
+  - id: cli-plan-composability
+    statement: "plan is composable: it loads the file, -e/--env filters environments, and -v/--verbose switches to detailed field output."
+    source: "Owner decision 2026-02-22"
+    validation:
+      type: test
+      target: "tests/cli_plan_tests.cpp"
+      case: "plan without env shows all environments; plan env verbose filters to selected environment"
+    updated_at: 2026-02-23T00:00:47Z
+  - id: cli-plan-env-default-scope
+    statement: "Without --env, plan renders all environments in the loaded config."
+    source: "Owner decision 2026-02-22"
+    validation:
+      type: test
+      target: "tests/cli_plan_tests.cpp"
+      case: "plan without env shows all environments"
+    updated_at: 2026-02-23T00:00:47Z
+  - id: cli-plan-format-deferred
+    statement: "--format is intentionally removed for now and deferred until later CLI phases."
+    source: "Owner decision 2026-02-22"
+    validation:
+      type: command
+      command: "./build/Debug/kubeforward plan --help"
+      expected: "--format absent"
+    updated_at: 2026-02-23T00:00:47Z
+  - id: cli-command-surface
+    statement: "CLI user commands are plan, up, and down (plus help/version); change is intentionally removed."
+    source: "Owner decision 2026-02-27"
+    validation:
+      type: command
+      command: "./build/Debug/kubeforward help"
+      expected: "Commands include plan/up/down and do not include change"
+    updated_at: 2026-02-27T16:34:17Z
+  - id: cli-up-down-shared-flags
+    statement: "up and down share -f/--file, -e/--env, -d/--daemon, and -v/--verbose options."
+    source: "Owner decision 2026-02-27"
+    validation:
+      type: test
+      target: "tests/cli_plan_tests.cpp"
+      case: "up supports daemon mode and explicit environment; up supports verbose output; down supports explicit environment and daemon mode; down supports verbose output"
+    updated_at: 2026-02-27T16:34:17Z
+  - id: cli-version-contract
+    statement: "--version prints build-time KF_APP_VERSION (default 0.0.0 locally); release workflow injects tag version and verifies binary output matches GITHUB_REF_NAME."
+    source: "Owner decision 2026-02-27"
+    validation:
+      type: doc-check
+      steps:
+        - "Verify CMakeLists.txt sets KF_APP_VERSION cache default to 0.0.0 and passes it as compile definition."
+        - "Verify tests/cli_plan_tests.cpp has case 'version flag prints app version' asserting output equals KF_APP_VERSION."
+        - "Verify .github/workflows/release.yml sets CMAKE_FLAGS=-DKF_APP_VERSION=${{ github.ref_name }} for release build/test and has a step that compares './build/Release/kubeforward --version' with GITHUB_REF_NAME."
+    updated_at: 2026-02-27T16:34:17Z
+  - id: runtime-resolved-plan-foundation
+    statement: "Runtime plan resolution is available via runtime::BuildResolvedPlan with extends/defaults merge, environment filtering, and resolved namespace/bindAddress derivation."
+    source: "Owner decision 2026-02-27"
+    validation:
+      type: test
+      target: "tests/runtime_resolved_plan_tests.cpp"
+      case: "resolved plan applies default bindAddress to ports; resolved plan inherits forwards for extends environments without local forwards; resolved plan rejects unknown environment filter"
+    updated_at: 2026-02-27T19:05:42Z
+  - id: runtime-state-store-foundation
+    statement: "Runtime session state is persisted as YAML by config path hash under temp dir (override via KUBEFORWARD_STATE_FILE) and includes session/forward pid metadata."
+    source: "Owner decision 2026-02-27"
+    validation:
+      type: test
+      target: "tests/runtime_state_store_tests.cpp"
+      case: "state store round-trips sessions; state store returns empty state for missing files; default state path is deterministic for config path"
+    updated_at: 2026-02-27T19:05:42Z
+  - id: runtime-process-runner-foundation
+    statement: "Process control abstraction includes PosixProcessRunner for real child lifecycle management (start + signal-based stop) and NoopProcessRunner for deterministic tests."
+    source: "Owner decision 2026-02-27"
+    validation:
+      type: test
+      target: "tests/runtime_process_runner_tests.cpp"
+      case: "posix process runner starts and stops a process group; posix process runner reports exec failures; posix process runner treats missing pid as already stopped; noop process runner allocates stable synthetic pids; noop process runner rejects empty argv; noop process runner validates pid on stop"
+    updated_at: 2026-02-27T19:58:36Z
+  - id: runtime-state-store-atomic-write-lock
+    statement: "Runtime state save/load uses a companion lock file and atomic temp-file rename to avoid partial writes and reduce concurrent command races."
+    source: "Owner decision 2026-02-27"
+    validation:
+      type: command
+      command: "rg -n \"flock|\\.tmp\\.|filesystem::rename|StateLockPath\" src/runtime/state_store.cpp"
+      expected: "LOCK_EX/LOCK_SH with temporary file rename"
+    updated_at: 2026-02-27T19:58:36Z
+  - id: cli-up-kubectl-argv-preflight
+    statement: "up now builds kubectl port-forward argv from resolved runtime plan fields and performs preflight checks for occupied local ports before spawning real processes; runtime execution requires concrete resource.name targets."
+    source: "Owner decision 2026-02-27"
+    validation:
+      type: command
+      command: "rg -n \"BuildKubectlPortForwardArgv|CheckPlanPortsAvailable|CheckRuntimeSessionPortConflicts|PosixProcessRunner\" src/cli/cli.cpp"
+      expected: "kubectl argv + preflight + non-noop runner path"
+    updated_at: 2026-02-27T21:26:48Z
+  - id: config-resource-name-only
+    statement: "Forward resources must use concrete resource.name targets; selector-based resources and container-specific targeting are intentionally unsupported for now to keep execution simple."
+    source: "Owner decision 2026-02-27"
+    validation:
+      type: test
+      target: "tests/config_loader_tests.cpp"
+      case: "config rejects selector-based resources"
+    updated_at: 2026-02-27T21:26:48Z
+  - id: release-kind-smoke-gate
+    statement: "GitHub Releases are gated by a pre-release kind smoke stage on ubuntu-latest before macOS packaging/signing jobs run."
+    source: "Owner decision 2026-02-27"
+    validation:
+      type: doc-check
+      steps:
+        - "Verify .github/workflows/release.yml defines a pre-release-kind-smoke job on ubuntu-latest."
+        - "Verify build-macos-unsigned needs pre-release-kind-smoke."
+        - "Verify tests/kind_smoke.sh exists and is invoked by the workflow."
+    updated_at: 2026-02-27T22:27:08Z
+  - id: make-test-e2e-contract
+    statement: "make test remains the normal unit/runtime suite; make test-e2e runs the local kind smoke flow after building the CLI; make test KIND_SMOKE=1 runs both."
+    source: "Owner decision 2026-02-27"
+    validation:
+      type: doc-check
+      steps:
+        - "Verify Makefile defines test-e2e and KIND_SMOKE behavior under test."
+        - "Verify README documents make test, make test-e2e, and make test KIND_SMOKE=1."
+        - "Verify release workflow uses make test-e2e for the kind smoke stage."
+    updated_at: 2026-02-27T22:45:09Z
