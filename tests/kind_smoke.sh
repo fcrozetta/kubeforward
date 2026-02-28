@@ -71,11 +71,12 @@ export KUBEFORWARD_STATE_FILE="${STATE_FILE}"
 "${BINARY_PATH}" up --file "${CONFIG_FILE}" --env dev --verbose
 
 for attempt in $(seq 1 20); do
-  if curl --fail --silent --show-error "http://127.0.0.1:${LOCAL_PORT}/" >/dev/null; then
+  if curl --fail --silent "http://127.0.0.1:${LOCAL_PORT}/" >/dev/null 2>&1; then
     break
   fi
   if [[ "${attempt}" == "20" ]]; then
     echo "smoke probe failed for forwarded port ${LOCAL_PORT}" >&2
+    curl --fail --silent --show-error "http://127.0.0.1:${LOCAL_PORT}/" >/dev/null
     exit 1
   fi
   sleep 1
