@@ -19,6 +19,7 @@ add_library(kubeforward_lib
   src/config/loader.cpp
   src/runtime/process_runner.cpp
   src/runtime/resolved_plan.cpp
+  src/runtime/session_conflicts.cpp
   src/runtime/state_store.cpp
 )
 target_include_directories(kubeforward_lib PUBLIC include)
@@ -35,6 +36,7 @@ add_executable(kubeforward_tests
   tests/config_loader_tests.cpp
   tests/runtime_process_runner_tests.cpp
   tests/runtime_resolved_plan_tests.cpp
+  tests/runtime_session_conflicts_tests.cpp
   tests/runtime_state_store_tests.cpp
 )
 target_link_libraries(kubeforward_tests PRIVATE kubeforward_lib Catch2::Catch2WithMain)

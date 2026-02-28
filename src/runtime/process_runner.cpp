@@ -35,25 +35,32 @@ bool IsProcessGroupAlive(pid_t pgid) {
   return errno == EPERM;
 }
 
-bool WaitForProcessGroupExit(pid_t pgid, int timeout_ms) {
+bool WaitForChildExit(pid_t pid, int timeout_ms) {
+  if (pid <= 0) {
+    return true;
+  }
+
   const int step_ms = 100;
   int waited_ms = 0;
   while (waited_ms < timeout_ms) {
-    const pid_t wait_result = ::waitpid(pgid, nullptr, WNOHANG);
-    if (wait_result == pgid) {
+    const pid_t wait_result = ::waitpid(pid, nullptr, WNOHANG);
+    if (wait_result == pid) {
       return true;
     }
-    if (!IsProcessGroupAlive(pgid)) {
+    if (wait_result < 0 && errno == ECHILD) {
       return true;
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(step_ms));
     waited_ms += step_ms;
   }
-  const pid_t wait_result = ::waitpid(pgid, nullptr, WNOHANG);
-  if (wait_result == pgid) {
+  const pid_t wait_result = ::waitpid(pid, nullptr, WNOHANG);
+  if (wait_result == pid) {
     return true;
   }
-  return !IsProcessGroupAlive(pgid);
+  if (wait_result < 0 && errno == ECHILD) {
+    return true;
+  }
+  return false;
 }
 
 }  // namespace
@@ -66,7 +73,7 @@ std::optional<StartedProcess> PosixProcessRunner::Start(const StartProcessReques
     return std::nullopt;
   }
 
-  if (!request.log_path.empty()) {
+  if (request.daemon && !request.log_path.empty()) {
     std::error_code ec;
     std::filesystem::create_directories(request.log_path.parent_path(), ec);
     if (ec) {
@@ -105,37 +112,40 @@ std::optional<StartedProcess> PosixProcessRunner::Start(const StartProcessReques
       _exit(127);
     }
 
-    const char* sink_path = "/dev/null";
-    std::string sink_path_storage;
-    if (!request.log_path.empty()) {
-      sink_path_storage = request.log_path.string();
-      sink_path = sink_path_storage.c_str();
-    }
+    if (request.daemon) {
+      const char* sink_path = "/dev/null";
+      std::string sink_path_storage;
+      if (!request.log_path.empty()) {
+        sink_path_storage = request.log_path.string();
+        sink_path = sink_path_storage.c_str();
+      }
 
-    const int in_fd = ::open("/dev/null", O_RDONLY);
-    const int out_fd = ::open(sink_path, O_CREAT | O_WRONLY | O_APPEND, 0644);
-    if (in_fd < 0 || out_fd < 0) {
-      const int child_errno = errno;
-      if (in_fd >= 0) {
+      const int in_fd = ::open("/dev/null", O_RDONLY);
+      const int out_fd = ::open(sink_path, O_CREAT | O_WRONLY | O_APPEND, 0644);
+      if (in_fd < 0 || out_fd < 0) {
+        const int child_errno = errno;
+        if (in_fd >= 0) {
+          ::close(in_fd);
+        }
+        if (out_fd >= 0) {
+          ::close(out_fd);
+        }
+        (void)::write(exec_pipe[1], &child_errno, sizeof(child_errno));
+        _exit(127);
+      }
+
+      if (::dup2(in_fd, STDIN_FILENO) < 0 || ::dup2(out_fd, STDOUT_FILENO) < 0 ||
+          ::dup2(out_fd, STDERR_FILENO) < 0) {
+        const int child_errno = errno;
         ::close(in_fd);
-      }
-      if (out_fd >= 0) {
         ::close(out_fd);
+        (void)::write(exec_pipe[1], &child_errno, sizeof(child_errno));
+        _exit(127);
       }
-      (void)::write(exec_pipe[1], &child_errno, sizeof(child_errno));
-      _exit(127);
-    }
 
-    if (::dup2(in_fd, STDIN_FILENO) < 0 || ::dup2(out_fd, STDOUT_FILENO) < 0 || ::dup2(out_fd, STDERR_FILENO) < 0) {
-      const int child_errno = errno;
       ::close(in_fd);
       ::close(out_fd);
-      (void)::write(exec_pipe[1], &child_errno, sizeof(child_errno));
-      _exit(127);
     }
-
-    ::close(in_fd);
-    ::close(out_fd);
 
     auto argv = ToExecArgv(request.argv);
     ::execvp(argv[0], argv.data());
@@ -184,7 +194,7 @@ bool PosixProcessRunner::Stop(int pid, std::string& error) {
     return false;
   }
 
-  if (WaitForProcessGroupExit(pgid, 3000)) {
+  if (WaitForChildExit(pgid, 3000) || !IsProcessGroupAlive(pgid)) {
     error.clear();
     return true;
   }
@@ -196,7 +206,7 @@ bool PosixProcessRunner::Stop(int pid, std::string& error) {
     return false;
   }
 
-  if (!WaitForProcessGroupExit(pgid, 1000)) {
+  if (!WaitForChildExit(pgid, 1000) && IsProcessGroupAlive(pgid)) {
     std::ostringstream oss;
     oss << "process group " << pgid << " did not exit after SIGKILL";
     error = oss.str();

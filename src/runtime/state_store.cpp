@@ -16,6 +16,27 @@
 namespace kubeforward::runtime {
 namespace {
 
+const char* PortProtocolToString(config::PortProtocol protocol) {
+  switch (protocol) {
+    case config::PortProtocol::kTcp:
+      return "tcp";
+    case config::PortProtocol::kUdp:
+      return "udp";
+  }
+  return "tcp";
+}
+
+config::PortProtocol ParsePortProtocol(const YAML::Node& node) {
+  if (!node || !node.IsScalar()) {
+    return config::PortProtocol::kTcp;
+  }
+  const auto value = node.as<std::string>();
+  if (value == "udp") {
+    return config::PortProtocol::kUdp;
+  }
+  return config::PortProtocol::kTcp;
+}
+
 std::string NormalizeConfigPath(const std::string& config_path) {
   std::error_code ec;
   const auto absolute_path = std::filesystem::absolute(config_path, ec);
@@ -41,8 +62,10 @@ YAML::Node SerializeState(const RuntimeState& state) {
       YAML::Node forward_node;
       forward_node["environment"] = forward.environment;
       forward_node["name"] = forward.forward_name;
+      forward_node["bindAddress"] = forward.bind_address;
       forward_node["localPort"] = forward.local_port;
       forward_node["remotePort"] = forward.remote_port;
+      forward_node["protocol"] = PortProtocolToString(forward.protocol);
       forward_node["pid"] = forward.pid;
       forwards.push_back(forward_node);
     }
@@ -116,8 +139,11 @@ RuntimeState ParseStateNode(const YAML::Node& root, std::vector<std::string>& er
         try {
           forward.environment = forward_node["environment"] ? forward_node["environment"].as<std::string>() : "";
           forward.forward_name = forward_node["name"] ? forward_node["name"].as<std::string>() : "";
+          forward.bind_address =
+              forward_node["bindAddress"] ? forward_node["bindAddress"].as<std::string>() : "127.0.0.1";
           forward.local_port = forward_node["localPort"] ? forward_node["localPort"].as<int>() : 0;
           forward.remote_port = forward_node["remotePort"] ? forward_node["remotePort"].as<int>() : 0;
+          forward.protocol = ParsePortProtocol(forward_node["protocol"]);
           forward.pid = forward_node["pid"] ? forward_node["pid"].as<int>() : 0;
         } catch (const YAML::BadConversion&) {
           AddStateError(errors, forward_context, "invalid scalar type");

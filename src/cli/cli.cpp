@@ -28,6 +28,7 @@
 #include "kubeforward/config/loader.h"
 #include "kubeforward/runtime/process_runner.h"
 #include "kubeforward/runtime/resolved_plan.h"
+#include "kubeforward/runtime/session_conflicts.h"
 #include "kubeforward/runtime/state_store.h"
 
 namespace {
@@ -264,14 +265,45 @@ std::string ResolveBindAddress(const kubeforward::config::PortMapping& port) {
   return "127.0.0.1";
 }
 
-bool IsPidAlive(int pid) {
-  if (pid <= 0) {
-    return false;
+std::optional<std::filesystem::path> ResolveExecutablePath(const std::string& executable) {
+  if (executable.empty()) {
+    return std::nullopt;
   }
-  if (::kill(pid, 0) == 0) {
+
+  const std::filesystem::path executable_path(executable);
+  const bool has_path_separator = executable.find('/') != std::string::npos;
+  if (has_path_separator || executable_path.is_absolute()) {
+    if (::access(executable.c_str(), X_OK) == 0) {
+      return executable_path;
+    }
+    return std::nullopt;
+  }
+
+  const char* path_env = std::getenv("PATH");
+  if (path_env == nullptr) {
+    return std::nullopt;
+  }
+
+  std::stringstream path_stream(path_env);
+  std::string entry;
+  while (std::getline(path_stream, entry, ':')) {
+    const auto candidate = std::filesystem::path(entry) / executable;
+    if (::access(candidate.c_str(), X_OK) == 0) {
+      return candidate;
+    }
+  }
+
+  return std::nullopt;
+}
+
+bool ValidateKubectlExecutable(std::string& error) {
+  if (ResolveExecutablePath(KubectlBinary()).has_value()) {
+    error.clear();
     return true;
   }
-  return errno == EPERM;
+
+  error = "kubectl executable is not available: " + std::string(KubectlBinary());
+  return false;
 }
 
 bool CheckPortAvailability(const kubeforward::config::PortMapping& port, std::string& error) {
@@ -378,38 +410,6 @@ bool BuildKubectlPortForwardArgv(const kubeforward::runtime::ResolvedEnvironment
     argv.push_back("--address");
     argv.push_back(*port.bind_address);
   }
-  error.clear();
-  return true;
-}
-
-bool CheckRuntimeSessionPortConflicts(const kubeforward::runtime::RuntimeState& state,
-                                      const std::string& normalized_config_path,
-                                      const kubeforward::runtime::ResolvedEnvironment& target_env, std::string& error) {
-  std::set<int> target_ports;
-  for (const auto& forward : target_env.forwards) {
-    for (const auto& port : forward.ports) {
-      target_ports.insert(port.local_port);
-    }
-  }
-
-  for (const auto& session : state.sessions) {
-    if (session.config_path == normalized_config_path && session.environment == target_env.name) {
-      continue;
-    }
-    for (const auto& process : session.forwards) {
-      if (target_ports.count(process.local_port) == 0) {
-        continue;
-      }
-      if (!IsPidAlive(process.pid)) {
-        continue;
-      }
-      std::ostringstream oss;
-      oss << "local port " << process.local_port << " is already claimed by running session '" << session.id << "'";
-      error = oss.str();
-      return false;
-    }
-  }
-
   error.clear();
   return true;
 }
@@ -546,6 +546,142 @@ std::vector<const kubeforward::runtime::ManagedSession*> MatchingSessions(
   return matches;
 }
 
+struct PreparedForwardLaunch {
+  std::string forward_name;
+  kubeforward::config::PortMapping port;
+  kubeforward::runtime::StartProcessRequest request;
+};
+
+kubeforward::runtime::ManagedSession MakeManagedSession(const std::string& normalized_config_path,
+                                                        const kubeforward::runtime::ResolvedEnvironment& resolved_env,
+                                                        bool daemon) {
+  kubeforward::runtime::ManagedSession session;
+  session.id = normalized_config_path + "::" + resolved_env.name + "::" + UtcNowString();
+  session.config_path = normalized_config_path;
+  session.environment = resolved_env.name;
+  session.daemon = daemon;
+  session.started_at_utc = UtcNowString();
+  return session;
+}
+
+bool BuildPreparedLaunches(const std::string& normalized_config_path,
+                           const kubeforward::runtime::ResolvedEnvironment& resolved_env, bool daemon,
+                           std::vector<PreparedForwardLaunch>& launches, std::string& error) {
+  launches.clear();
+
+  std::error_code cwd_error;
+  const auto cwd = std::filesystem::current_path(cwd_error);
+  if (cwd_error) {
+    error = "failed to resolve current working directory: " + cwd_error.message();
+    return false;
+  }
+
+  for (const auto& forward : resolved_env.forwards) {
+    for (const auto& port : forward.ports) {
+      std::vector<std::string> argv;
+      if (!BuildKubectlPortForwardArgv(resolved_env, forward, port, argv, error)) {
+        error = "invalid forward '" + forward.name + "': " + error;
+        return false;
+      }
+
+      kubeforward::runtime::StartProcessRequest request;
+      request.cwd = cwd;
+      request.daemon = daemon;
+      request.argv = std::move(argv);
+      request.log_path = BuildForwardLogPath(normalized_config_path, resolved_env.name, forward.name, port.local_port);
+      launches.push_back(PreparedForwardLaunch{.forward_name = forward.name, .port = port, .request = std::move(request)});
+    }
+  }
+
+  error.clear();
+  return true;
+}
+
+void StopSessionProcesses(const kubeforward::runtime::ManagedSession& session, kubeforward::runtime::ProcessRunner& runner,
+                          const std::string& error_prefix, bool& stop_failed, int& stopped_processes) {
+  for (const auto& process : session.forwards) {
+    std::string stop_error;
+    if (!runner.Stop(process.pid, stop_error)) {
+      std::cerr << error_prefix << process.pid << ": " << stop_error << "\n";
+      stop_failed = true;
+      continue;
+    }
+    ++stopped_processes;
+  }
+}
+
+void StopStartedSession(kubeforward::runtime::ManagedSession& session, kubeforward::runtime::ProcessRunner& runner) {
+  bool stop_failed = false;
+  int stopped_processes = 0;
+  StopSessionProcesses(session, runner, "up: failed to stop pid ", stop_failed, stopped_processes);
+  session.forwards.clear();
+}
+
+bool StartManagedSession(const std::string& normalized_config_path,
+                         const kubeforward::runtime::ResolvedEnvironment& resolved_env, bool daemon,
+                         const std::vector<PreparedForwardLaunch>& launches, kubeforward::runtime::ProcessRunner& runner,
+                         kubeforward::runtime::ManagedSession& session, std::string& error) {
+  session = MakeManagedSession(normalized_config_path, resolved_env, daemon);
+
+  for (const auto& launch : launches) {
+    std::string start_error;
+    const auto started = runner.Start(launch.request, start_error);
+    if (!started.has_value()) {
+      error = "failed to start forward '" + launch.forward_name + "': " + start_error;
+      StopStartedSession(session, runner);
+      return false;
+    }
+
+    session.forwards.push_back(kubeforward::runtime::ManagedForwardProcess{
+        .environment = resolved_env.name,
+        .forward_name = launch.forward_name,
+        .bind_address = ResolveBindAddress(launch.port),
+        .local_port = launch.port.local_port,
+        .remote_port = launch.port.remote_port,
+        .protocol = launch.port.protocol,
+        .pid = started->pid,
+    });
+  }
+
+  error.clear();
+  return true;
+}
+
+void RemoveMatchingSessions(kubeforward::runtime::RuntimeState& state, const std::string& normalized_config_path,
+                            const std::string& environment) {
+  state.sessions.erase(
+      std::remove_if(state.sessions.begin(), state.sessions.end(),
+                     [&](const kubeforward::runtime::ManagedSession& session) {
+                       return session.config_path == normalized_config_path && session.environment == environment;
+                     }),
+      state.sessions.end());
+}
+
+bool RestoreReplacedSession(const std::filesystem::path& state_path, const kubeforward::runtime::RuntimeState& original_state,
+                            const std::string& normalized_config_path,
+                            const kubeforward::runtime::ResolvedEnvironment& resolved_env, bool daemon,
+                            const std::vector<PreparedForwardLaunch>& launches,
+                            kubeforward::runtime::ProcessRunner& runner, std::string& error) {
+  kubeforward::runtime::ManagedSession restored_session;
+  if (!StartManagedSession(normalized_config_path, resolved_env, daemon, launches, runner, restored_session, error)) {
+    return false;
+  }
+
+  auto rollback_state = original_state;
+  RemoveMatchingSessions(rollback_state, normalized_config_path, resolved_env.name);
+  rollback_state.sessions.push_back(restored_session);
+
+  std::string save_error;
+  if (!kubeforward::runtime::SaveState(state_path, rollback_state, save_error)) {
+    StopStartedSession(restored_session, runner);
+    error = "failed to restore previous session state: " + save_error;
+    return false;
+  }
+
+  error.clear();
+  return true;
+}
+
 int RunUpCommand(const std::vector<std::string>& args) {
   //! up always resolves to a single environment target.
   CommandOptions options;
@@ -593,91 +729,106 @@ int RunUpCommand(const std::vector<std::string>& args) {
 
   kubeforward::runtime::RuntimeState state = state_load.state;
   auto runner = MakeProcessRunner();
-  bool replace_stop_failed = false;
   int replaced_processes = 0;
-  state.sessions.erase(
-      std::remove_if(state.sessions.begin(), state.sessions.end(),
-                     [&](const kubeforward::runtime::ManagedSession& existing) {
-                       if (existing.config_path != normalized_config_path || existing.environment != resolved_env.name) {
-                         return false;
-                       }
-                       bool session_failed = false;
-                       for (const auto& process : existing.forwards) {
-                         std::string stop_error;
-                         if (!runner->Stop(process.pid, stop_error)) {
-                           std::cerr << "up: failed to stop replaced pid " << process.pid << ": " << stop_error << "\n";
-                           replace_stop_failed = true;
-                           session_failed = true;
-                         } else {
-                           ++replaced_processes;
-                         }
-                       }
-                       return !session_failed;
-                     }),
-      state.sessions.end());
+  std::vector<kubeforward::runtime::ManagedSession> existing_sessions;
+  for (const auto* session : MatchingSessions(state, normalized_config_path, resolved_env.name)) {
+    existing_sessions.push_back(*session);
+  }
 
-  if (replace_stop_failed) {
+  std::vector<PreparedForwardLaunch> launches;
+  std::string launch_error;
+  if (!BuildPreparedLaunches(normalized_config_path, resolved_env, options.daemon, launches, launch_error)) {
+    std::cerr << "up: " << launch_error << "\n";
     return 2;
   }
 
   if (!UseNoopRunner()) {
     std::string preflight_error;
-    if (!CheckRuntimeSessionPortConflicts(state, normalized_config_path, resolved_env, preflight_error)) {
+    if (!kubeforward::runtime::CheckRuntimeSessionPortConflicts(state, normalized_config_path, resolved_env,
+                                                                preflight_error)) {
       std::cerr << "up: preflight failed: " << preflight_error << "\n";
       return 2;
     }
-    if (!CheckPlanPortsAvailable(resolved_env, preflight_error)) {
+    if (!ValidateKubectlExecutable(preflight_error)) {
       std::cerr << "up: preflight failed: " << preflight_error << "\n";
       return 2;
+    }
+    if (existing_sessions.empty() && !CheckPlanPortsAvailable(resolved_env, preflight_error)) {
+      std::cerr << "up: preflight failed: " << preflight_error << "\n";
+      return 2;
+    }
+  }
+
+  if (!existing_sessions.empty()) {
+    bool replace_stop_failed = false;
+    for (const auto& existing_session : existing_sessions) {
+      StopSessionProcesses(existing_session, *runner, "up: failed to stop replaced pid ", replace_stop_failed,
+                           replaced_processes);
+    }
+    if (replace_stop_failed) {
+      return 2;
+    }
+
+    if (!UseNoopRunner()) {
+      std::string preflight_error;
+      if (!CheckPlanPortsAvailable(resolved_env, preflight_error)) {
+        std::string restore_error;
+        if (!RestoreReplacedSession(state_path, state, normalized_config_path, resolved_env, options.daemon, launches,
+                                    *runner, restore_error)) {
+          std::cerr << "up: preflight failed after stopping existing session: " << preflight_error << "\n";
+          std::cerr << "up: rollback failed: " << restore_error << "\n";
+          return 2;
+        }
+        std::cerr << "up: preflight failed after stopping existing session: " << preflight_error << "\n";
+        std::cerr << "up: previous session was restored\n";
+        return 2;
+      }
     }
   }
 
   kubeforward::runtime::ManagedSession session;
-  session.id = normalized_config_path + "::" + resolved_env.name + "::" + UtcNowString();
-  session.config_path = normalized_config_path;
-  session.environment = resolved_env.name;
-  session.daemon = options.daemon;
-  session.started_at_utc = UtcNowString();
-
-  for (const auto& forward : resolved_env.forwards) {
-    for (const auto& port : forward.ports) {
-      std::vector<std::string> argv;
-      std::string argv_error;
-      if (!BuildKubectlPortForwardArgv(resolved_env, forward, port, argv, argv_error)) {
-        std::cerr << "up: invalid forward '" << forward.name << "': " << argv_error << "\n";
-        return 2;
-      }
-
-      kubeforward::runtime::StartProcessRequest request;
-      request.cwd = std::filesystem::current_path();
-      request.daemon = options.daemon;
-      request.argv = argv;
-      request.log_path = BuildForwardLogPath(normalized_config_path, resolved_env.name, forward.name, port.local_port);
-
-      std::string start_error;
-      const auto started = runner->Start(request, start_error);
-      if (!started.has_value()) {
-        std::cerr << "up: failed to start forward '" << forward.name << "': " << start_error << "\n";
-        for (const auto& started_forward : session.forwards) {
-          std::string rollback_error;
-          (void)runner->Stop(started_forward.pid, rollback_error);
-        }
-        return 2;
-      }
-
-      session.forwards.push_back(kubeforward::runtime::ManagedForwardProcess{
-          .environment = resolved_env.name,
-          .forward_name = forward.name,
-          .local_port = port.local_port,
-          .remote_port = port.remote_port,
-          .pid = started->pid,
-      });
+  std::string start_error;
+  if (!StartManagedSession(normalized_config_path, resolved_env, options.daemon, launches, *runner, session,
+                           start_error)) {
+    if (existing_sessions.empty()) {
+      std::cerr << "up: " << start_error << "\n";
+      return 2;
     }
+
+    std::string restore_error;
+    if (!RestoreReplacedSession(state_path, state, normalized_config_path, resolved_env, options.daemon, launches,
+                                *runner, restore_error)) {
+      std::cerr << "up: " << start_error << "\n";
+      std::cerr << "up: rollback failed: " << restore_error << "\n";
+      return 2;
+    }
+
+    std::cerr << "up: " << start_error << "\n";
+    std::cerr << "up: previous session was restored\n";
+    return 2;
   }
-  state.sessions.push_back(session);
+
+  auto next_state = state;
+  RemoveMatchingSessions(next_state, normalized_config_path, resolved_env.name);
+  next_state.sessions.push_back(session);
 
   std::string save_error;
-  if (!kubeforward::runtime::SaveState(state_path, state, save_error)) {
+  if (!kubeforward::runtime::SaveState(state_path, next_state, save_error)) {
+    StopStartedSession(session, *runner);
+
+    if (!existing_sessions.empty()) {
+      std::string restore_error;
+      if (!RestoreReplacedSession(state_path, state, normalized_config_path, resolved_env, options.daemon, launches,
+                                  *runner, restore_error)) {
+        std::cerr << "up: failed to save runtime state '" << state_path.string() << "': " << save_error << "\n";
+        std::cerr << "up: rollback failed: " << restore_error << "\n";
+        return 2;
+      }
+      std::cerr << "up: failed to save runtime state '" << state_path.string() << "': " << save_error << "\n";
+      std::cerr << "up: previous session was restored\n";
+      return 2;
+    }
+
     std::cerr << "up: failed to save runtime state '" << state_path.string() << "': " << save_error << "\n";
     return 2;
   }

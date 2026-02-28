@@ -4,14 +4,18 @@
 #include <string>
 #include <vector>
 
+#include "kubeforward/config/types.h"
+
 namespace kubeforward::runtime {
 
 //! Runtime process metadata for one forwarded local port.
 struct ManagedForwardProcess {
   std::string environment;
   std::string forward_name;
+  std::string bind_address = "127.0.0.1";
   int local_port = 0;
   int remote_port = 0;
+  config::PortProtocol protocol = config::PortProtocol::kTcp;
   int pid = 0;
 };
 

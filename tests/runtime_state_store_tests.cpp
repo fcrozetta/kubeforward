@@ -27,7 +27,13 @@ TEST_CASE("state store round-trips sessions", "[runtime]") {
   session.daemon = true;
   session.started_at_utc = "2026-02-27T00:00:00Z";
   session.forwards.push_back(kubeforward::runtime::ManagedForwardProcess{
-      .environment = "dev", .forward_name = "api", .local_port = 7000, .remote_port = 7000, .pid = 12001});
+      .environment = "dev",
+      .forward_name = "api",
+      .bind_address = "127.0.0.2",
+      .local_port = 7000,
+      .remote_port = 7000,
+      .protocol = kubeforward::config::PortProtocol::kUdp,
+      .pid = 12001});
   state.sessions.push_back(session);
 
   std::string error;
@@ -39,6 +45,8 @@ TEST_CASE("state store round-trips sessions", "[runtime]") {
   REQUIRE(load.state.sessions.size() == 1);
   REQUIRE(load.state.sessions.at(0).id == "session-dev");
   REQUIRE(load.state.sessions.at(0).forwards.size() == 1);
+  CHECK(load.state.sessions.at(0).forwards.at(0).bind_address == "127.0.0.2");
+  CHECK(load.state.sessions.at(0).forwards.at(0).protocol == kubeforward::config::PortProtocol::kUdp);
   CHECK(load.state.sessions.at(0).forwards.at(0).pid == 12001);
 }
 

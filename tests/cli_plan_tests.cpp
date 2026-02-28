@@ -1,13 +1,25 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <cerrno>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <functional>
 #include <iostream>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <signal.h>
 #include <sstream>
 #include <string>
+#include <sys/socket.h>
+#include <thread>
+#include <unistd.h>
 #include <vector>
+#include <atomic>
 
 #include "kubeforward/cli.h"
+#include "kubeforward/runtime/state_store.h"
 
 #ifndef KF_SOURCE_DIR
 #error "KF_SOURCE_DIR must be defined"
@@ -25,6 +37,13 @@ std::filesystem::path TempDir() {
   const auto base = std::filesystem::temp_directory_path() / "kubeforward-cli-tests";
   std::filesystem::create_directories(base);
   return base;
+}
+
+std::string UniqueSuffix() {
+  static std::atomic<unsigned long> counter{0};
+  std::ostringstream oss;
+  oss << ::getpid() << "-" << counter.fetch_add(1, std::memory_order_relaxed);
+  return oss.str();
 }
 
 struct CliResult {
@@ -91,7 +110,7 @@ class ScopedEnvVar {
 
 class ScopedStateFile {
  public:
-  ScopedStateFile() : path_(TempDir() / ("state-" + std::to_string(std::rand()) + ".yaml")),
+  ScopedStateFile() : path_(TempDir() / ("state-" + UniqueSuffix() + ".yaml")),
                       env_("KUBEFORWARD_STATE_FILE", path_.string().c_str()) {
     std::filesystem::remove(path_);
   }
@@ -105,8 +124,180 @@ class ScopedStateFile {
   ScopedEnvVar env_;
 };
 
+class ScopedCleanup {
+ public:
+  explicit ScopedCleanup(std::function<void()> callback) : callback_(std::move(callback)) {}
+
+  ~ScopedCleanup() {
+    if (active_ && callback_) {
+      callback_();
+    }
+  }
+
+  void Dismiss() { active_ = false; }
+
+ private:
+  bool active_ = true;
+  std::function<void()> callback_;
+};
+
 std::filesystem::path TempConfigCopyPath(const std::string& stem) {
-  return TempDir() / (stem + "-" + std::to_string(std::rand()) + ".yaml");
+  return TempDir() / (stem + "-" + UniqueSuffix() + ".yaml");
+}
+
+std::filesystem::path TempPath(const std::string& stem, const std::string& extension) {
+  return TempDir() / (stem + "-" + UniqueSuffix() + extension);
+}
+
+void WriteFile(const std::filesystem::path& path, const std::string& contents) {
+  std::ofstream output(path, std::ios::trunc);
+  output << contents;
+}
+
+std::filesystem::path WriteExecutableScript(const std::string& stem, const std::string& body) {
+  const auto path = TempPath(stem, ".sh");
+  WriteFile(path, body);
+  std::filesystem::permissions(
+      path,
+      std::filesystem::perms::owner_read | std::filesystem::perms::owner_write | std::filesystem::perms::owner_exec |
+          std::filesystem::perms::group_read | std::filesystem::perms::group_exec |
+          std::filesystem::perms::others_read | std::filesystem::perms::others_exec,
+      std::filesystem::perm_options::replace);
+  return path;
+}
+
+std::filesystem::path WriteConfigFile(const std::string& stem, const std::string& body) {
+  const auto path = TempPath(stem, ".yaml");
+  WriteFile(path, body);
+  return path;
+}
+
+std::filesystem::path WriteSingleForwardConfig(const std::string& stem, const std::string& env_name, int local_port,
+                                               const std::string& bind_address = "127.0.0.1") {
+  return WriteConfigFile(
+      stem,
+      std::string("version: 1\n"
+                  "metadata:\n"
+                  "  project: cli-test\n"
+                  "defaults:\n"
+                  "  namespace: default\n"
+                  "  bindAddress: ") +
+          bind_address +
+          "\n"
+          "environments:\n"
+          "  " +
+          env_name +
+          ":\n"
+          "    forwards:\n"
+          "      - name: api\n"
+          "        resource:\n"
+          "          kind: deployment\n"
+          "          name: api\n"
+          "        ports:\n"
+          "          - local: " +
+          std::to_string(local_port) +
+          "\n"
+          "            remote: 80\n");
+}
+
+bool IsPidAlive(int pid) {
+  if (pid <= 0) {
+    return false;
+  }
+  if (::kill(pid, 0) == 0) {
+    return true;
+  }
+  return errno == EPERM;
+}
+
+int RandomLocalPort() { return 20000 + (std::rand() % 10000); }
+
+int ReserveTcpPort(const std::string& bind_address) {
+  const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+  if (fd < 0) {
+    return 0;
+  }
+
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_port = 0;
+  if (::inet_pton(AF_INET, bind_address.c_str(), &addr.sin_addr) != 1) {
+    ::close(fd);
+    return 0;
+  }
+  if (::bind(fd, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) != 0) {
+    ::close(fd);
+    return 0;
+  }
+
+  socklen_t addr_len = sizeof(addr);
+  if (::getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &addr_len) != 0) {
+    ::close(fd);
+    return 0;
+  }
+
+  const int port = ntohs(addr.sin_port);
+  ::close(fd);
+  return port;
+}
+
+int FindAvailableLoopbackPort() {
+  for (int attempt = 0; attempt < 32; ++attempt) {
+    const int port = ReserveTcpPort("127.0.0.1");
+    if (port <= 0) {
+      continue;
+    }
+
+    const int verify_fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (verify_fd < 0) {
+      continue;
+    }
+
+    sockaddr_in verify_addr{};
+    verify_addr.sin_family = AF_INET;
+    verify_addr.sin_port = htons(static_cast<uint16_t>(port));
+    if (::inet_pton(AF_INET, "127.0.0.2", &verify_addr.sin_addr) != 1) {
+      ::close(verify_fd);
+      return port;
+    }
+
+    const bool available_on_alt = ::bind(verify_fd, reinterpret_cast<const sockaddr*>(&verify_addr), sizeof(verify_addr)) == 0;
+    ::close(verify_fd);
+    if (available_on_alt) {
+      return port;
+    }
+  }
+
+  return RandomLocalPort();
+}
+
+bool CanConnectTcpPort(int port, const std::string& bind_address = "127.0.0.1") {
+  const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+  if (fd < 0) {
+    return false;
+  }
+
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(static_cast<uint16_t>(port));
+  if (::inet_pton(AF_INET, bind_address.c_str(), &addr.sin_addr) != 1) {
+    ::close(fd);
+    return false;
+  }
+
+  const bool ok = ::connect(fd, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) == 0;
+  ::close(fd);
+  return ok;
+}
+
+bool WaitForPortClosed(int port, int timeout_ms = 6000) {
+  for (int waited_ms = 0; waited_ms < timeout_ms; waited_ms += 50) {
+    if (!CanConnectTcpPort(port)) {
+      return true;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+  return !CanConnectTcpPort(port);
 }
 
 CliResult RunAndCapture(const std::vector<std::string>& args) {
@@ -266,6 +457,84 @@ TEST_CASE("down stops tracked sessions when config is missing", "[cli]") {
   CHECK(result.out.find("scope: environment") != std::string::npos);
   CHECK(result.out.find("env: dev") != std::string::npos);
   CHECK(result.out.find("stopped: 1") != std::string::npos);
+}
+
+TEST_CASE("up preserves the running session when replacement kubectl is invalid", "[cli]") {
+  ScopedStateFile state_file;
+  const auto kubectl_script = WriteExecutableScript("fake-kubectl", "#!/bin/sh\ntrap 'exit 0' TERM INT\nsleep 30\n");
+  const auto config_copy = WriteSingleForwardConfig("replacement-invalid-kubectl", "dev", FindAvailableLoopbackPort());
+  ScopedCleanup cleanup([&]() {
+    ScopedEnvVar kubectl_bin("KUBEFORWARD_KUBECTL_BIN", kubectl_script.string().c_str());
+    (void)kubeforward::run_cli({"kubeforward", "down", "--file", config_copy.string(), "--env", "dev"});
+  });
+
+  {
+    ScopedEnvVar kubectl_bin("KUBEFORWARD_KUBECTL_BIN", kubectl_script.string().c_str());
+    REQUIRE(kubeforward::run_cli({"kubeforward", "up", "--file", config_copy.string(), "--env", "dev"}) == 0);
+  }
+
+  const auto initial_state = kubeforward::runtime::LoadState(state_file.path());
+  REQUIRE(initial_state.ok());
+  REQUIRE(initial_state.state.sessions.size() == 1);
+  REQUIRE(initial_state.state.sessions.at(0).forwards.size() == 1);
+  const int original_pid = initial_state.state.sessions.at(0).forwards.at(0).pid;
+  REQUIRE(IsPidAlive(original_pid));
+
+  {
+    ScopedEnvVar invalid_kubectl("KUBEFORWARD_KUBECTL_BIN", "/path/that/does/not/exist");
+    const auto result = RunAndCapture({"kubeforward", "up", "--file", config_copy.string(), "--env", "dev"});
+    REQUIRE(result.exit_code == 2);
+    CHECK(result.err.find("kubectl executable is not available") != std::string::npos);
+  }
+
+  const auto after_failure_state = kubeforward::runtime::LoadState(state_file.path());
+  REQUIRE(after_failure_state.ok());
+  REQUIRE(after_failure_state.state.sessions.size() == 1);
+  REQUIRE(after_failure_state.state.sessions.at(0).forwards.size() == 1);
+  CHECK(after_failure_state.state.sessions.at(0).forwards.at(0).pid == original_pid);
+  CHECK(IsPidAlive(original_pid));
+
+  {
+    ScopedEnvVar kubectl_bin("KUBEFORWARD_KUBECTL_BIN", kubectl_script.string().c_str());
+    REQUIRE(kubeforward::run_cli({"kubeforward", "down", "--file", config_copy.string(), "--env", "dev"}) == 0);
+  }
+  cleanup.Dismiss();
+}
+
+TEST_CASE("up stops started forwards when state persistence fails", "[cli]") {
+  const auto state_dir = TempPath("state-save-dir", "");
+  std::filesystem::create_directories(state_dir);
+  const auto state_path = state_dir / "state.yaml";
+  const auto state_lock_path = state_dir / "state.yaml.lock";
+  WriteFile(state_path, "sessions: []\n");
+  WriteFile(state_lock_path, "");
+  std::filesystem::permissions(
+      state_dir, std::filesystem::perms::owner_read | std::filesystem::perms::owner_exec,
+      std::filesystem::perm_options::replace);
+  ScopedEnvVar state_file("KUBEFORWARD_STATE_FILE", state_path.string().c_str());
+
+  const int local_port = FindAvailableLoopbackPort();
+  const auto kubectl_script = WriteExecutableScript(
+      "fake-kubectl-binder",
+      "#!/bin/sh\n"
+      "local_port=\"${3%%:*}\"\n"
+      "exec /usr/bin/python3 -c 'import signal, socket, sys, time; "
+      "s = socket.socket(); "
+      "s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); "
+      "s.bind((\"127.0.0.1\", int(sys.argv[1]))); "
+      "s.listen(1); "
+      "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+      "signal.signal(signal.SIGINT, signal.SIG_IGN); "
+      "time.sleep(30)' \"$local_port\"\n");
+
+  ScopedEnvVar kubectl_bin("KUBEFORWARD_KUBECTL_BIN", kubectl_script.string().c_str());
+  const auto config_path = WriteSingleForwardConfig("state-save-failure", "dev", local_port);
+  const auto result = RunAndCapture({"kubeforward", "up", "--file", config_path.string(), "--env", "dev"});
+  REQUIRE(result.exit_code == 2);
+  CHECK(result.err.find("failed to save runtime state") != std::string::npos);
+  CHECK(WaitForPortClosed(local_port, 6000));
+  std::filesystem::permissions(
+      state_dir, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace);
 }
 
 TEST_CASE("commands are mutually exclusive by subcommand position", "[cli]") {

@@ -68,7 +68,7 @@ environments:
 EOF
 
 export KUBEFORWARD_STATE_FILE="${STATE_FILE}"
-"${BINARY_PATH}" up --file "${CONFIG_FILE}" --env dev --verbose
+"${BINARY_PATH}" up --file "${CONFIG_FILE}" --env dev --daemon --verbose
 
 for attempt in $(seq 1 20); do
   if curl --fail --silent "http://127.0.0.1:${LOCAL_PORT}/" >/dev/null 2>&1; then
