@@ -95,6 +95,20 @@ std::vector<ResolvedForward> ResolveForwards(const std::string& env_name,
   return forwards;
 }
 
+void ValidateResolvedEnvironment(const ResolvedEnvironment& env, std::vector<PlanBuildError>& errors) {
+  if (!env.guards.allow_production) {
+    return;
+  }
+
+  for (size_t i = 0; i < env.forwards.size(); ++i) {
+    if (env.forwards[i].detach) {
+      continue;
+    }
+    AddError(errors, "environments." + env.name + ".forwards[" + std::to_string(i) + "].annotations.detach",
+             "production environment requires detach=true for every forward");
+  }
+}
+
 std::optional<ResolvedEnvironment> ResolveEnvironmentRecursive(
     const std::string& env_name, const config::Config& config, std::map<std::string, ResolvedEnvironment>& cache,
     std::set<std::string>& visiting, std::vector<PlanBuildError>& errors) {
@@ -136,6 +150,7 @@ std::optional<ResolvedEnvironment> ResolveEnvironmentRecursive(
   resolved.settings = effective_settings;
   resolved.guards = effective_guards;
   resolved.forwards = ResolveForwards(env_name, forward_definitions, effective_settings, errors);
+  ValidateResolvedEnvironment(resolved, errors);
 
   visiting.erase(env_name);
   cache.emplace(env_name, resolved);

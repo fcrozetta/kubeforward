@@ -12,6 +12,9 @@ namespace kubeforward::runtime {
 struct ManagedForwardProcess {
   std::string environment;
   std::string forward_name;
+  std::vector<std::string> argv;
+  std::string cwd;
+  std::string log_path;
   std::string bind_address = "127.0.0.1";
   int local_port = 0;
   int remote_port = 0;

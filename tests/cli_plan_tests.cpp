@@ -141,6 +141,48 @@ class ScopedCleanup {
   std::function<void()> callback_;
 };
 
+class ScopedListeningSocket {
+ public:
+  ScopedListeningSocket(const std::string& bind_address, int port) {
+    fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (fd_ < 0) {
+      return;
+    }
+
+    const int reuse = 1;
+    (void)::setsockopt(fd_, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(static_cast<uint16_t>(port));
+    if (::inet_pton(AF_INET, bind_address.c_str(), &addr.sin_addr) != 1) {
+      ::close(fd_);
+      fd_ = -1;
+      return;
+    }
+    if (::bind(fd_, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) != 0) {
+      ::close(fd_);
+      fd_ = -1;
+      return;
+    }
+    if (::listen(fd_, 1) != 0) {
+      ::close(fd_);
+      fd_ = -1;
+    }
+  }
+
+  ~ScopedListeningSocket() {
+    if (fd_ >= 0) {
+      ::close(fd_);
+    }
+  }
+
+  bool ok() const { return fd_ >= 0; }
+
+ private:
+  int fd_ = -1;
+};
+
 std::filesystem::path TempConfigCopyPath(const std::string& stem) {
   return TempDir() / (stem + "-" + UniqueSuffix() + ".yaml");
 }
@@ -172,32 +214,35 @@ std::filesystem::path WriteConfigFile(const std::string& stem, const std::string
   return path;
 }
 
+std::string SingleForwardConfigContents(const std::string& env_name, int local_port,
+                                        const std::string& bind_address = "127.0.0.1") {
+  return std::string("version: 1\n"
+                     "metadata:\n"
+                     "  project: cli-test\n"
+                     "defaults:\n"
+                     "  namespace: default\n"
+                     "  bindAddress: ") +
+         bind_address +
+         "\n"
+         "environments:\n"
+         "  " +
+         env_name +
+         ":\n"
+         "    forwards:\n"
+         "      - name: api\n"
+         "        resource:\n"
+         "          kind: deployment\n"
+         "          name: api\n"
+         "        ports:\n"
+         "          - local: " +
+         std::to_string(local_port) +
+         "\n"
+         "            remote: 80\n";
+}
+
 std::filesystem::path WriteSingleForwardConfig(const std::string& stem, const std::string& env_name, int local_port,
                                                const std::string& bind_address = "127.0.0.1") {
-  return WriteConfigFile(
-      stem,
-      std::string("version: 1\n"
-                  "metadata:\n"
-                  "  project: cli-test\n"
-                  "defaults:\n"
-                  "  namespace: default\n"
-                  "  bindAddress: ") +
-          bind_address +
-          "\n"
-          "environments:\n"
-          "  " +
-          env_name +
-          ":\n"
-          "    forwards:\n"
-          "      - name: api\n"
-          "        resource:\n"
-          "          kind: deployment\n"
-          "          name: api\n"
-          "        ports:\n"
-          "          - local: " +
-          std::to_string(local_port) +
-          "\n"
-          "            remote: 80\n");
+  return WriteConfigFile(stem, SingleForwardConfigContents(env_name, local_port, bind_address));
 }
 
 bool IsPidAlive(int pid) {
@@ -501,6 +546,56 @@ TEST_CASE("up preserves the running session when replacement kubectl is invalid"
   cleanup.Dismiss();
 }
 
+TEST_CASE("up restores the original session when replacement preflight fails after stop", "[cli]") {
+  ScopedStateFile state_file;
+  const auto kubectl_script = WriteExecutableScript("fake-kubectl", "#!/bin/sh\ntrap 'exit 0' TERM INT\nsleep 30\n");
+  const int original_port = FindAvailableLoopbackPort();
+  int blocked_port = FindAvailableLoopbackPort();
+  while (blocked_port == original_port) {
+    blocked_port = FindAvailableLoopbackPort();
+  }
+  const auto config_path = WriteSingleForwardConfig("replacement-preflight-failure", "dev", original_port);
+  ScopedCleanup cleanup([&]() {
+    ScopedEnvVar kubectl_bin("KUBEFORWARD_KUBECTL_BIN", kubectl_script.string().c_str());
+    (void)kubeforward::run_cli({"kubeforward", "down", "--file", config_path.string(), "--env", "dev"});
+  });
+
+  {
+    ScopedEnvVar kubectl_bin("KUBEFORWARD_KUBECTL_BIN", kubectl_script.string().c_str());
+    REQUIRE(kubeforward::run_cli({"kubeforward", "up", "--file", config_path.string(), "--env", "dev"}) == 0);
+  }
+
+  const auto initial_state = kubeforward::runtime::LoadState(state_file.path());
+  REQUIRE(initial_state.ok());
+  REQUIRE(initial_state.state.sessions.size() == 1);
+  const int original_pid = initial_state.state.sessions.at(0).forwards.at(0).pid;
+
+  WriteFile(config_path, SingleForwardConfigContents("dev", blocked_port));
+  ScopedListeningSocket blocker("127.0.0.1", blocked_port);
+  REQUIRE(blocker.ok());
+
+  {
+    ScopedEnvVar kubectl_bin("KUBEFORWARD_KUBECTL_BIN", kubectl_script.string().c_str());
+    const auto result = RunAndCapture({"kubeforward", "up", "--file", config_path.string(), "--env", "dev"});
+    REQUIRE(result.exit_code == 2);
+    CHECK(result.err.find("previous session was restored") != std::string::npos);
+  }
+
+  const auto restored_state = kubeforward::runtime::LoadState(state_file.path());
+  REQUIRE(restored_state.ok());
+  REQUIRE(restored_state.state.sessions.size() == 1);
+  REQUIRE(restored_state.state.sessions.at(0).forwards.size() == 1);
+  CHECK(restored_state.state.sessions.at(0).forwards.at(0).local_port == original_port);
+  CHECK(restored_state.state.sessions.at(0).forwards.at(0).pid != original_pid);
+  CHECK(IsPidAlive(restored_state.state.sessions.at(0).forwards.at(0).pid));
+
+  {
+    ScopedEnvVar kubectl_bin("KUBEFORWARD_KUBECTL_BIN", kubectl_script.string().c_str());
+    REQUIRE(kubeforward::run_cli({"kubeforward", "down", "--file", config_path.string(), "--env", "dev"}) == 0);
+  }
+  cleanup.Dismiss();
+}
+
 TEST_CASE("up stops started forwards when state persistence fails", "[cli]") {
   const auto state_dir = TempPath("state-save-dir", "");
   std::filesystem::create_directories(state_dir);
@@ -596,6 +691,26 @@ TEST_CASE("plan verbose shows detailed fields", "[cli]") {
   CHECK(result.out.find("Defaults:") != std::string::npos);
   CHECK(result.out.find("settings:") != std::string::npos);
   CHECK(result.out.find("ports:") != std::string::npos);
+}
+
+TEST_CASE("plan renders inherited forwards from the resolved environment graph", "[cli]") {
+  const auto result =
+      RunAndCapture({"kubeforward", "plan", "--file", Fixture("extends_with_defaults.yaml"), "--env", "child"});
+
+  REQUIRE(result.exit_code == 0);
+  CHECK(result.out.find("Environment: child") != std::string::npos);
+  CHECK(result.out.find("base-api") != std::string::npos);
+  CHECK(result.out.find("Forwards (1)") != std::string::npos);
+}
+
+TEST_CASE("plan verbose renders resolved child settings", "[cli]") {
+  const auto result = RunAndCapture(
+      {"kubeforward", "plan", "--file", Fixture("extends_with_child_overrides.yaml"), "--env", "child", "--verbose"});
+
+  REQUIRE(result.exit_code == 0);
+  CHECK(result.out.find("namespace: child-ns") != std::string::npos);
+  CHECK(result.out.find("bindAddress: 127.0.0.2") != std::string::npos);
+  CHECK(result.out.find("base-api") != std::string::npos);
 }
 
 TEST_CASE("plan env verbose filters to selected environment", "[cli]") {

@@ -83,3 +83,15 @@ TEST_CASE("resolved plan rejects unknown environment filter", "[runtime]") {
   REQUIRE_FALSE(plan_result.ok());
   REQUIRE_FALSE(plan_result.errors.empty());
 }
+
+TEST_CASE("resolved plan rejects inherited non-detached production forwards", "[runtime]") {
+  const auto load_result = kubeforward::config::LoadConfigFromFile(Fixture("invalid_production_inherited_detach.yaml"));
+  REQUIRE(load_result.ok());
+  REQUIRE(load_result.config.has_value());
+
+  const auto plan_result = kubeforward::runtime::BuildResolvedPlan(
+      *load_result.config, Fixture("invalid_production_inherited_detach.yaml"), std::optional<std::string>{"prod"});
+  REQUIRE_FALSE(plan_result.ok());
+  REQUIRE_FALSE(plan_result.errors.empty());
+  CHECK(plan_result.errors.front().message == "production environment requires detach=true for every forward");
+}

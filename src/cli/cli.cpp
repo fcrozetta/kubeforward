@@ -133,6 +133,19 @@ void PrintPlanSummary(const std::string& name, const kubeforward::config::Enviro
   std::cout << "\n";
 }
 
+void PrintPlanSummary(const kubeforward::config::EnvironmentDefinition& source_env,
+                      const kubeforward::runtime::ResolvedEnvironment& env) {
+  std::cout << "Environment: " << env.name << "\n";
+  if (source_env.description.has_value()) {
+    std::cout << "  Description: " << *source_env.description << "\n";
+  }
+  std::cout << "  Forwards (" << env.forwards.size() << ")\n";
+  for (const auto& forward : env.forwards) {
+    std::cout << "    - " << forward.name << " [" << forward.ports.size() << " port(s)]\n";
+  }
+  std::cout << "\n";
+}
+
 void PrintVerboseHeader(const kubeforward::config::Config& config, const std::string& config_path) {
   std::cout << "Config file: " << config_path << "\n";
   std::cout << "Version: " << config.version << "\n";
@@ -153,6 +166,69 @@ void PrintPlanVerbose(const std::string& name, const kubeforward::config::Enviro
   std::cout << "Environment: " << name << "\n";
   std::cout << "  extends: " << OptionalValueOr(env.extends) << "\n";
   std::cout << "  description: " << OptionalValueOr(env.description) << "\n";
+  std::cout << "  settings:\n";
+  std::cout << "    kubeconfig: " << OptionalValueOr(env.settings.kubeconfig) << "\n";
+  std::cout << "    context: " << OptionalValueOr(env.settings.context) << "\n";
+  std::cout << "    namespace: " << OptionalValueOr(env.settings.namespace_name) << "\n";
+  std::cout << "    bindAddress: " << OptionalValueOr(env.settings.bind_address) << "\n";
+  std::cout << "    labels:\n";
+  PrintStringMap(env.settings.labels, "      ");
+  std::cout << "  guards:\n";
+  std::cout << "    allowProduction: " << (env.guards.allow_production ? "true" : "false") << "\n";
+  std::cout << "  forwards:\n";
+  if (env.forwards.empty()) {
+    std::cout << "    <none>\n\n";
+    return;
+  }
+  for (const auto& forward : env.forwards) {
+    std::cout << "    - name: " << forward.name << "\n";
+    std::cout << "      resource:\n";
+    std::cout << "        kind: " << ResourceKindToString(forward.resource.kind) << "\n";
+    std::cout << "        name: " << OptionalValueOr(forward.resource.name) << "\n";
+    std::cout << "        namespace: " << OptionalValueOr(forward.resource.namespace_override) << "\n";
+    std::cout << "      annotations:\n";
+    std::cout << "        detach: " << (forward.detach ? "true" : "false") << "\n";
+    std::cout << "        restartPolicy: " << RestartPolicyToString(forward.restart_policy) << "\n";
+    std::cout << "        passthrough:\n";
+    PrintStringMap(forward.annotations, "          ");
+    std::cout << "      healthCheck:\n";
+    if (!forward.health_check.has_value()) {
+      std::cout << "        <none>\n";
+    } else {
+      std::cout << "        timeoutMs: "
+                << (forward.health_check->timeout_ms.has_value() ? std::to_string(*forward.health_check->timeout_ms)
+                                                                 : "<unset>")
+                << "\n";
+      std::cout << "        exec:\n";
+      if (forward.health_check->exec.empty()) {
+        std::cout << "          <none>\n";
+      } else {
+        for (const auto& command_part : forward.health_check->exec) {
+          std::cout << "          - " << command_part << "\n";
+        }
+      }
+    }
+    std::cout << "      env:\n";
+    PrintStringMap(forward.env, "        ");
+    std::cout << "      ports:\n";
+    if (forward.ports.empty()) {
+      std::cout << "        <none>\n";
+    } else {
+      for (const auto& port : forward.ports) {
+        std::cout << "        - " << port.local_port << " -> " << port.remote_port
+                  << " (" << PortProtocolToString(port.protocol) << ")\n";
+        std::cout << "          bindAddress: " << OptionalValueOr(port.bind_address) << "\n";
+      }
+    }
+  }
+  std::cout << "\n";
+}
+
+void PrintPlanVerbose(const kubeforward::config::EnvironmentDefinition& source_env,
+                      const kubeforward::runtime::ResolvedEnvironment& env) {
+  std::cout << "Environment: " << env.name << "\n";
+  std::cout << "  extends: " << OptionalValueOr(source_env.extends) << "\n";
+  std::cout << "  description: " << OptionalValueOr(source_env.description) << "\n";
   std::cout << "  settings:\n";
   std::cout << "    kubeconfig: " << OptionalValueOr(env.settings.kubeconfig) << "\n";
   std::cout << "    context: " << OptionalValueOr(env.settings.context) << "\n";
@@ -597,6 +673,42 @@ bool BuildPreparedLaunches(const std::string& normalized_config_path,
   return true;
 }
 
+bool BuildPreparedLaunchesFromSession(const kubeforward::runtime::ManagedSession& session,
+                                      std::vector<PreparedForwardLaunch>& launches, std::string& error) {
+  launches.clear();
+  launches.reserve(session.forwards.size());
+
+  for (size_t i = 0; i < session.forwards.size(); ++i) {
+    const auto& forward = session.forwards[i];
+    if (forward.argv.empty()) {
+      error = "session '" + session.id + "' cannot be restored because forward '" + forward.forward_name +
+              "' has no stored argv";
+      return false;
+    }
+
+    kubeforward::runtime::StartProcessRequest request;
+    request.argv = forward.argv;
+    request.cwd = forward.cwd;
+    request.daemon = session.daemon;
+    request.log_path = forward.log_path;
+
+    kubeforward::config::PortMapping port;
+    port.local_port = forward.local_port;
+    port.remote_port = forward.remote_port;
+    port.bind_address = forward.bind_address;
+    port.protocol = forward.protocol;
+
+    launches.push_back(PreparedForwardLaunch{
+        .forward_name = forward.forward_name,
+        .port = port,
+        .request = std::move(request),
+    });
+  }
+
+  error.clear();
+  return true;
+}
+
 void StopSessionProcesses(const kubeforward::runtime::ManagedSession& session, kubeforward::runtime::ProcessRunner& runner,
                           const std::string& error_prefix, bool& stop_failed, int& stopped_processes) {
   for (const auto& process : session.forwards) {
@@ -635,12 +747,46 @@ bool StartManagedSession(const std::string& normalized_config_path,
     session.forwards.push_back(kubeforward::runtime::ManagedForwardProcess{
         .environment = resolved_env.name,
         .forward_name = launch.forward_name,
+        .argv = launch.request.argv,
+        .cwd = launch.request.cwd.string(),
+        .log_path = launch.request.log_path.string(),
         .bind_address = ResolveBindAddress(launch.port),
         .local_port = launch.port.local_port,
         .remote_port = launch.port.remote_port,
         .protocol = launch.port.protocol,
         .pid = started->pid,
     });
+  }
+
+  error.clear();
+  return true;
+}
+
+bool StartManagedSession(const kubeforward::runtime::ManagedSession& snapshot,
+                         const std::vector<PreparedForwardLaunch>& launches, kubeforward::runtime::ProcessRunner& runner,
+                         kubeforward::runtime::ManagedSession& session, std::string& error) {
+  session = snapshot;
+  session.forwards.clear();
+  session.forwards.reserve(launches.size());
+
+  for (size_t i = 0; i < launches.size(); ++i) {
+    const auto& launch = launches[i];
+    const auto& snapshot_forward = snapshot.forwards[i];
+
+    std::string start_error;
+    const auto started = runner.Start(launch.request, start_error);
+    if (!started.has_value()) {
+      error = "failed to restore forward '" + launch.forward_name + "': " + start_error;
+      StopStartedSession(session, runner);
+      return false;
+    }
+
+    auto restored_forward = snapshot_forward;
+    restored_forward.pid = started->pid;
+    restored_forward.argv = launch.request.argv;
+    restored_forward.cwd = launch.request.cwd.string();
+    restored_forward.log_path = launch.request.log_path.string();
+    session.forwards.push_back(std::move(restored_forward));
   }
 
   error.clear();
@@ -657,23 +803,37 @@ void RemoveMatchingSessions(kubeforward::runtime::RuntimeState& state, const std
       state.sessions.end());
 }
 
-bool RestoreReplacedSession(const std::filesystem::path& state_path, const kubeforward::runtime::RuntimeState& original_state,
-                            const std::string& normalized_config_path,
-                            const kubeforward::runtime::ResolvedEnvironment& resolved_env, bool daemon,
-                            const std::vector<PreparedForwardLaunch>& launches,
-                            kubeforward::runtime::ProcessRunner& runner, std::string& error) {
-  kubeforward::runtime::ManagedSession restored_session;
-  if (!StartManagedSession(normalized_config_path, resolved_env, daemon, launches, runner, restored_session, error)) {
-    return false;
-  }
-
+bool RestoreReplacedSessions(const std::filesystem::path& state_path, const kubeforward::runtime::RuntimeState& original_state,
+                             const std::vector<kubeforward::runtime::ManagedSession>& sessions_to_restore,
+                             kubeforward::runtime::ProcessRunner& runner, std::string& error) {
   auto rollback_state = original_state;
-  RemoveMatchingSessions(rollback_state, normalized_config_path, resolved_env.name);
-  rollback_state.sessions.push_back(restored_session);
+  std::vector<kubeforward::runtime::ManagedSession> restored_sessions;
+  for (const auto& snapshot : sessions_to_restore) {
+    std::vector<PreparedForwardLaunch> launches;
+    if (!BuildPreparedLaunchesFromSession(snapshot, launches, error)) {
+      for (auto& restored : restored_sessions) {
+        StopStartedSession(restored, runner);
+      }
+      return false;
+    }
+
+    kubeforward::runtime::ManagedSession restored_session;
+    if (!StartManagedSession(snapshot, launches, runner, restored_session, error)) {
+      for (auto& restored : restored_sessions) {
+        StopStartedSession(restored, runner);
+      }
+      return false;
+    }
+    RemoveMatchingSessions(rollback_state, snapshot.config_path, snapshot.environment);
+    rollback_state.sessions.push_back(restored_session);
+    restored_sessions.push_back(std::move(restored_session));
+  }
 
   std::string save_error;
   if (!kubeforward::runtime::SaveState(state_path, rollback_state, save_error)) {
-    StopStartedSession(restored_session, runner);
+    for (auto& restored : restored_sessions) {
+      StopStartedSession(restored, runner);
+    }
     error = "failed to restore previous session state: " + save_error;
     return false;
   }
@@ -773,8 +933,7 @@ int RunUpCommand(const std::vector<std::string>& args) {
       std::string preflight_error;
       if (!CheckPlanPortsAvailable(resolved_env, preflight_error)) {
         std::string restore_error;
-        if (!RestoreReplacedSession(state_path, state, normalized_config_path, resolved_env, options.daemon, launches,
-                                    *runner, restore_error)) {
+        if (!RestoreReplacedSessions(state_path, state, existing_sessions, *runner, restore_error)) {
           std::cerr << "up: preflight failed after stopping existing session: " << preflight_error << "\n";
           std::cerr << "up: rollback failed: " << restore_error << "\n";
           return 2;
@@ -796,8 +955,7 @@ int RunUpCommand(const std::vector<std::string>& args) {
     }
 
     std::string restore_error;
-    if (!RestoreReplacedSession(state_path, state, normalized_config_path, resolved_env, options.daemon, launches,
-                                *runner, restore_error)) {
+    if (!RestoreReplacedSessions(state_path, state, existing_sessions, *runner, restore_error)) {
       std::cerr << "up: " << start_error << "\n";
       std::cerr << "up: rollback failed: " << restore_error << "\n";
       return 2;
@@ -818,8 +976,7 @@ int RunUpCommand(const std::vector<std::string>& args) {
 
     if (!existing_sessions.empty()) {
       std::string restore_error;
-      if (!RestoreReplacedSession(state_path, state, normalized_config_path, resolved_env, options.daemon, launches,
-                                  *runner, restore_error)) {
+      if (!RestoreReplacedSessions(state_path, state, existing_sessions, *runner, restore_error)) {
         std::cerr << "up: failed to save runtime state '" << state_path.string() << "': " << save_error << "\n";
         std::cerr << "up: rollback failed: " << restore_error << "\n";
         return 2;
@@ -991,36 +1148,33 @@ int RunPlanCommand(const std::vector<std::string>& args) {
   }
 
   const auto& config = *config_result.config;
-  std::vector<std::pair<std::string, kubeforward::config::EnvironmentDefinition>> environments;
-  environments.reserve(config.environments.size());
-
   if (config.environments.empty()) {
     std::cout << "No environments defined in config.\n";
     return 0;
   }
 
-  if (!env_filter.empty()) {
-    auto it = config.environments.find(env_filter);
-    if (it == config.environments.end()) {
-      std::cerr << "plan: unknown environment '" << env_filter << "'.\n";
-      return 2;
+  const auto plan_result =
+      kubeforward::runtime::BuildResolvedPlan(config, config_path,
+                                              env_filter.empty() ? std::optional<std::string>{}
+                                                                 : std::optional<std::string>{env_filter});
+  if (!plan_result.ok()) {
+    std::cerr << "plan: failed to resolve execution plan.\n";
+    for (const auto& error : plan_result.errors) {
+      std::cerr << "  - " << error.context << ": " << error.message << "\n";
     }
-    environments.emplace_back(*it);
-  } else {
-    for (const auto& entry : config.environments) {
-      environments.emplace_back(entry);
-    }
+    return 2;
   }
 
   if (verbose) {
     PrintVerboseHeader(config, config_path);
   }
 
-  for (const auto& [name, env] : environments) {
+  for (const auto& env : plan_result.plan->environments) {
+    const auto& source_env = config.environments.at(env.name);
     if (verbose) {
-      PrintPlanVerbose(name, env);
+      PrintPlanVerbose(source_env, env);
     } else {
-      PrintPlanSummary(name, env);
+      PrintPlanSummary(source_env, env);
     }
   }
 

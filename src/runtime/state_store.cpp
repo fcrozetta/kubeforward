@@ -62,6 +62,13 @@ YAML::Node SerializeState(const RuntimeState& state) {
       YAML::Node forward_node;
       forward_node["environment"] = forward.environment;
       forward_node["name"] = forward.forward_name;
+      YAML::Node argv(YAML::NodeType::Sequence);
+      for (const auto& arg : forward.argv) {
+        argv.push_back(arg);
+      }
+      forward_node["argv"] = argv;
+      forward_node["cwd"] = forward.cwd;
+      forward_node["logPath"] = forward.log_path;
       forward_node["bindAddress"] = forward.bind_address;
       forward_node["localPort"] = forward.local_port;
       forward_node["remotePort"] = forward.remote_port;
@@ -139,6 +146,27 @@ RuntimeState ParseStateNode(const YAML::Node& root, std::vector<std::string>& er
         try {
           forward.environment = forward_node["environment"] ? forward_node["environment"].as<std::string>() : "";
           forward.forward_name = forward_node["name"] ? forward_node["name"].as<std::string>() : "";
+          if (const auto argv_node = forward_node["argv"]) {
+            if (!argv_node.IsSequence()) {
+              AddStateError(errors, forward_context + ".argv", "expected list");
+              continue;
+            }
+            forward.argv.reserve(argv_node.size());
+            for (size_t k = 0; k < argv_node.size(); ++k) {
+              try {
+                forward.argv.push_back(argv_node[k].as<std::string>());
+              } catch (const YAML::BadConversion&) {
+                AddStateError(errors, forward_context + ".argv[" + std::to_string(k) + "]", "invalid scalar type");
+                forward.argv.clear();
+                break;
+              }
+            }
+            if (forward.argv.empty() && argv_node.size() > 0) {
+              continue;
+            }
+          }
+          forward.cwd = forward_node["cwd"] ? forward_node["cwd"].as<std::string>() : "";
+          forward.log_path = forward_node["logPath"] ? forward_node["logPath"].as<std::string>() : "";
           forward.bind_address =
               forward_node["bindAddress"] ? forward_node["bindAddress"].as<std::string>() : "127.0.0.1";
           forward.local_port = forward_node["localPort"] ? forward_node["localPort"].as<int>() : 0;
@@ -235,10 +263,13 @@ StateLoadResult LoadState(const std::filesystem::path& path) {
 
 bool SaveState(const std::filesystem::path& path, const RuntimeState& state, std::string& error) {
   std::error_code ec;
-  std::filesystem::create_directories(path.parent_path(), ec);
-  if (ec) {
-    error = "failed to create state directory: " + ec.message();
-    return false;
+  const auto parent = path.parent_path();
+  if (!parent.empty()) {
+    std::filesystem::create_directories(parent, ec);
+    if (ec) {
+      error = "failed to create state directory: " + ec.message();
+      return false;
+    }
   }
 
   const int lock_fd = OpenAndLockStateFile(path, LOCK_EX, error);

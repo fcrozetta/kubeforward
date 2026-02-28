@@ -1,4 +1,4 @@
-last_updated: 2026-02-28T03:09:00Z
+last_updated: 2026-02-28T03:28:00Z
 claims:
   - id: vcpkg-baseline
     statement: "vcpkg manifest baseline is pinned to commit 81ded1ca9f81437a39dc520c653f3006953308f3."
@@ -146,9 +146,17 @@ claims:
     source: "Owner decision 2026-02-27"
     validation:
       type: command
-      command: "rg -n \"BuildKubectlPortForwardArgv|ValidateKubectlExecutable|StartManagedSession|RestoreReplacedSession|PosixProcessRunner\" src/cli/cli.cpp"
+      command: "rg -n \"BuildKubectlPortForwardArgv|ValidateKubectlExecutable|StartManagedSession|RestoreReplacedSessions|PosixProcessRunner\" src/cli/cli.cpp"
       expected: "kubectl argv + executable validation + transactional replacement path"
     updated_at: 2026-02-28T03:09:00Z
+  - id: runtime-session-rollback-snapshot
+    statement: "Runtime session state persists restart metadata (argv/cwd/log path) so failed replacements roll back to the original stopped session rather than the current config."
+    source: "Owner decision 2026-02-28"
+    validation:
+      type: test
+      target: "tests/cli_plan_tests.cpp"
+      case: "up restores the original session when replacement preflight fails after stop"
+    updated_at: 2026-02-28T03:28:00Z
   - id: runtime-session-conflict-socket-tuple
     statement: "Runtime session conflict checks key claims by bind address, local port, and protocol, so different socket tuples do not block each other."
     source: "Owner decision 2026-02-28"
@@ -157,6 +165,30 @@ claims:
       target: "tests/runtime_session_conflicts_tests.cpp"
       case: "runtime conflict check allows same port on different bind addresses; runtime conflict check allows same port on different protocols; runtime conflict check rejects identical socket tuples from another session"
     updated_at: 2026-02-28T03:09:00Z
+  - id: plan-renders-resolved-environments
+    statement: "The plan command renders the resolved environment graph, including inherited forwards and merged settings, so its output matches what up will execute."
+    source: "Owner decision 2026-02-28"
+    validation:
+      type: test
+      target: "tests/cli_plan_tests.cpp"
+      case: "plan renders inherited forwards from the resolved environment graph; plan verbose renders resolved child settings"
+    updated_at: 2026-02-28T03:28:00Z
+  - id: production-detach-revalidated-after-extends
+    statement: "Resolved plans revalidate the production detach rule after extends/default merges, so inherited foreground forwards cannot bypass allowProduction safety."
+    source: "Owner decision 2026-02-28"
+    validation:
+      type: test
+      target: "tests/runtime_resolved_plan_tests.cpp"
+      case: "resolved plan rejects inherited non-detached production forwards"
+    updated_at: 2026-02-28T03:28:00Z
+  - id: state-store-parentless-relative-paths
+    statement: "State persistence skips directory creation when the target path has no parent component, so relative override paths like state.yaml work."
+    source: "Owner decision 2026-02-28"
+    validation:
+      type: test
+      target: "tests/runtime_state_store_tests.cpp"
+      case: "state store supports parentless relative paths"
+    updated_at: 2026-02-28T03:28:00Z
   - id: config-resource-name-only
     statement: "Forward resources must use concrete resource.name targets; selector-based resources and container-specific targeting are intentionally unsupported for now to keep execution simple."
     source: "Owner decision 2026-02-27"
