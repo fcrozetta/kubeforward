@@ -11,6 +11,7 @@ Current implementation status: config loading/validation and `plan` output are i
 ## Quick Start
 
 ```bash
+brew install fcrozetta/tools/kubeforward
 kubeforward help
 kubeforward plan --config kubeforward.yaml
 kubeforward plan --config kubeforward.yaml --env dev
