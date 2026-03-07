@@ -1,4 +1,4 @@
-last_updated: 2026-02-28T16:11:14Z
+last_updated: 2026-03-07T22:46:00Z
 claims:
   - id: vcpkg-baseline
     statement: "vcpkg manifest baseline is pinned to commit 81ded1ca9f81437a39dc520c653f3006953308f3."
@@ -100,15 +100,16 @@ claims:
       case: "up supports daemon mode and explicit environment; up supports verbose output; down supports explicit environment and daemon mode; down supports verbose output"
     updated_at: 2026-02-27T16:34:17Z
   - id: cli-version-contract
-    statement: "--version prints build-time KF_APP_VERSION (default 0.0.0 locally); release workflow injects tag version and verifies binary output matches GITHUB_REF_NAME."
+    statement: "--version prints build-time KF_APP_VERSION (default 0.0.0 locally); release workflows inject tag version for macOS and Linux/Windows builds so release binaries report GITHUB_REF_NAME."
     source: "Owner decision 2026-02-27"
     validation:
       type: doc-check
       steps:
         - "Verify CMakeLists.txt sets KF_APP_VERSION cache default to 0.0.0 and passes it as compile definition."
         - "Verify tests/cli_plan_tests.cpp has case 'version flag prints app version' asserting output equals KF_APP_VERSION."
-        - "Verify .github/workflows/release.yml sets CMAKE_FLAGS=-DKF_APP_VERSION=${{ github.ref_name }} for release build/test and has a step that compares './build/Release/kubeforward --version' with GITHUB_REF_NAME."
-    updated_at: 2026-02-27T16:34:17Z
+        - "Verify .github/workflows/release.yml passes -DKF_APP_VERSION=${GITHUB_REF_NAME} in the Linux/Windows matrix Build (Release) step."
+        - "Verify macOS release build/test path still injects KF_APP_VERSION from github.ref_name and verifies './build/Release/kubeforward --version' equals GITHUB_REF_NAME."
+    updated_at: 2026-03-07T22:46:00Z
   - id: runtime-resolved-plan-foundation
     statement: "Runtime plan resolution is available via runtime::BuildResolvedPlan with extends/defaults merge, environment filtering, and resolved namespace/bindAddress derivation."
     source: "Owner decision 2026-02-27"

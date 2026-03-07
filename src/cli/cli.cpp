@@ -1197,11 +1197,15 @@ int RunDownCommand(const std::vector<std::string>& args) {
   }
   kubeforward::runtime::RuntimeState state = state_load.state;
   const auto matched_sessions = MatchingSessions(state, normalized_config_path, options.env_filter);
+  const size_t matched_session_count = matched_sessions.size();
   size_t matched_forwards = 0;
   std::set<std::string> matched_environments;
+  std::map<std::string, size_t> matched_environment_forward_counts;
   for (const auto* session : matched_sessions) {
-    matched_forwards += CountSessionForwards(*session);
+    const size_t forward_count = CountSessionForwards(*session);
+    matched_forwards += forward_count;
     matched_environments.insert(session->environment);
+    matched_environment_forward_counts[session->environment] += forward_count;
   }
 
   auto runner = MakeProcessRunner();
@@ -1252,7 +1256,7 @@ int RunDownCommand(const std::vector<std::string>& args) {
     if (options.verbose) {
       std::cout << "  state: " << state_path.string() << "\n";
       std::cout << "  stopped: " << stopped_processes << "\n";
-      std::cout << "  sessions: " << matched_sessions.size() << "\n";
+      std::cout << "  sessions: " << matched_session_count << "\n";
     }
     return 0;
   }
@@ -1265,12 +1269,7 @@ int RunDownCommand(const std::vector<std::string>& args) {
     std::cout << "  stopped: " << stopped_processes << "\n";
     std::cout << "  environment breakdown:\n";
     for (const auto& env_name : matched_environments) {
-      size_t env_forward_count = 0;
-      for (const auto* session : matched_sessions) {
-        if (session->environment == env_name) {
-          env_forward_count += CountSessionForwards(*session);
-        }
-      }
+      const size_t env_forward_count = matched_environment_forward_counts[env_name];
       std::cout << "    - " << env_name << " (" << env_forward_count << " forward(s))\n";
     }
   }

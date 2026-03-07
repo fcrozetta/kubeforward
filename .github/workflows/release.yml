@@ -192,10 +192,12 @@ jobs:
       - name: Build (Release)
         shell: bash
         run: |
+          VERSION="${GITHUB_REF_NAME}"
           cmake -S . -B build/Release \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_TOOLCHAIN_FILE="${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" \
-            -DVCPKG_TARGET_TRIPLET="${{ matrix.triplet }}"
+            -DVCPKG_TARGET_TRIPLET="${{ matrix.triplet }}" \
+            -DKF_APP_VERSION="${VERSION}"
           cmake --build build/Release --config Release --target kubeforward
 
       - name: Test (Release)
