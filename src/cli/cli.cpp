@@ -787,6 +787,11 @@ bool ShouldSignalManagedProcess(const kubeforward::runtime::ManagedForwardProces
     return true;
   }
 
+  if (::kill(process.pid, 0) != 0 && errno == ESRCH) {
+    reason.clear();
+    return true;
+  }
+
   const auto live_command = ReadProcessCommandLine(process.pid);
   if (!live_command.has_value()) {
     reason = "refusing to signal pid because process identity cannot be verified";
@@ -817,6 +822,7 @@ void StopSessionProcesses(const kubeforward::runtime::ManagedSession& session, k
     std::string identity_error;
     if (!ShouldSignalManagedProcess(process, identity_error)) {
       std::cerr << error_prefix << process.pid << ": " << identity_error << "\n";
+      stop_failed = true;
       continue;
     }
     std::string stop_error;
@@ -1298,6 +1304,8 @@ int RunDownCommand(const std::vector<std::string>& args) {
       std::string identity_error;
       if (!ShouldSignalManagedProcess(process, identity_error)) {
         std::cerr << "down: skipped pid " << process.pid << ": " << identity_error << "\n";
+        stop_failed = true;
+        session_failed = true;
         continue;
       }
       std::string stop_error;

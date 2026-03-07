@@ -557,6 +557,63 @@ TEST_CASE("down matches sessions across equivalent config path spellings", "[cli
   CHECK(result.out.find("stopped: 1") != std::string::npos);
 }
 
+TEST_CASE("down keeps sessions when process identity cannot be verified", "[cli]") {
+  ScopedStateFile state_file;
+  const int managed_port = FindAvailableLoopbackPort();
+  const auto config_path = WriteSingleForwardConfig("down-identity-mismatch", "dev", managed_port);
+
+  kubeforward::runtime::PosixProcessRunner runner;
+  kubeforward::runtime::StartProcessRequest request;
+  request.argv = {"/bin/sh", "-c", "trap 'exit 0' TERM INT; sleep 30"};
+  request.cwd = std::filesystem::current_path();
+
+  std::string error;
+  const auto started = runner.Start(request, error);
+  REQUIRE(started.has_value());
+  REQUIRE(error.empty());
+  const int managed_pid = started->pid;
+  REQUIRE(IsPidAlive(managed_pid));
+
+  kubeforward::runtime::RuntimeState state;
+  kubeforward::runtime::ManagedSession session;
+  session.id = "mismatch-session-down";
+  session.config_path = std::filesystem::absolute(config_path).string();
+  session.environment = "dev";
+  session.daemon = true;
+  session.started_at_utc = "2026-03-08T00:00:00Z";
+  session.forwards.push_back(kubeforward::runtime::ManagedForwardProcess{
+      .environment = "dev",
+      .forward_name = "api",
+      .argv = {"kubectl", "port-forward", "deployment/api", std::to_string(managed_port) + ":80"},
+      .cwd = request.cwd.string(),
+      .bind_address = "127.0.0.1",
+      .local_port = managed_port,
+      .remote_port = 80,
+      .protocol = kubeforward::config::PortProtocol::kTcp,
+      .pid = managed_pid,
+  });
+  state.sessions.push_back(session);
+  REQUIRE(kubeforward::runtime::SaveState(state_file.path(), state, error));
+  REQUIRE(error.empty());
+
+  const auto result =
+      RunAndCapture({"kubeforward", "down", "--file", config_path.string(), "--env", "dev", "--verbose"});
+  REQUIRE(result.exit_code == 2);
+  CHECK(result.err.find("skipped pid") != std::string::npos);
+
+  const auto persisted_state = kubeforward::runtime::LoadState(state_file.path());
+  REQUIRE(persisted_state.ok());
+  REQUIRE(persisted_state.state.sessions.size() == 1);
+  REQUIRE(persisted_state.state.sessions.at(0).forwards.size() == 1);
+  CHECK(persisted_state.state.sessions.at(0).forwards.at(0).pid == managed_pid);
+  CHECK(IsPidAlive(managed_pid));
+
+  std::string stop_error;
+  if (IsPidAlive(managed_pid)) {
+    CHECK(runner.Stop(managed_pid, stop_error));
+  }
+}
+
 TEST_CASE("up preserves the running session when replacement kubectl is invalid", "[cli]") {
   ScopedStateFile state_file;
   const auto kubectl_script = WriteExecutableScript("fake-kubectl", "#!/bin/sh\ntrap 'exit 0' TERM INT\nsleep 30\n");
@@ -598,6 +655,81 @@ TEST_CASE("up preserves the running session when replacement kubectl is invalid"
     REQUIRE(kubeforward::run_cli({"kubeforward", "down", "--file", config_copy.string(), "--env", "dev"}) == 0);
   }
   cleanup.Dismiss();
+}
+
+TEST_CASE("up replacement fails when old process identity cannot be verified", "[cli]") {
+  ScopedStateFile state_file;
+  const auto kubectl_script = WriteExecutableScript(
+      "fake-kubectl-up-mismatch",
+      "#!/bin/sh\n"
+      "trap 'exit 0' TERM INT\n"
+      "sleep 30\n");
+  const int original_port = FindAvailableLoopbackPort();
+  int replacement_port = FindAvailableLoopbackPort();
+  while (replacement_port == original_port) {
+    replacement_port = FindAvailableLoopbackPort();
+  }
+  const auto config_path = WriteSingleForwardConfig("replacement-identity-mismatch", "dev", replacement_port);
+  ScopedEnvVar kubectl_bin("KUBEFORWARD_KUBECTL_BIN", kubectl_script.string().c_str());
+
+  kubeforward::runtime::PosixProcessRunner runner;
+  kubeforward::runtime::StartProcessRequest request;
+  request.argv = {"/bin/sh", "-c", "trap 'exit 0' TERM INT; sleep 30"};
+  request.cwd = std::filesystem::current_path();
+
+  std::string error;
+  const auto started = runner.Start(request, error);
+  REQUIRE(started.has_value());
+  REQUIRE(error.empty());
+  const int original_pid = started->pid;
+  REQUIRE(IsPidAlive(original_pid));
+
+  kubeforward::runtime::RuntimeState state;
+  kubeforward::runtime::ManagedSession session;
+  session.id = "mismatch-session-up";
+  session.config_path = std::filesystem::absolute(config_path).string();
+  session.environment = "dev";
+  session.daemon = true;
+  session.started_at_utc = "2026-03-08T00:00:00Z";
+  session.forwards.push_back(kubeforward::runtime::ManagedForwardProcess{
+      .environment = "dev",
+      .forward_name = "api",
+      .argv = {"kubectl", "port-forward", "deployment/api", std::to_string(original_port) + ":80"},
+      .cwd = request.cwd.string(),
+      .bind_address = "127.0.0.1",
+      .local_port = original_port,
+      .remote_port = 80,
+      .protocol = kubeforward::config::PortProtocol::kTcp,
+      .pid = original_pid,
+  });
+  state.sessions.push_back(session);
+  REQUIRE(kubeforward::runtime::SaveState(state_file.path(), state, error));
+  REQUIRE(error.empty());
+
+  const auto result =
+      RunAndCapture({"kubeforward", "up", "--file", config_path.string(), "--env", "dev", "--daemon"});
+  REQUIRE(result.exit_code == 2);
+  CHECK(result.err.find("failed to stop replaced pid") != std::string::npos);
+
+  const auto persisted_state = kubeforward::runtime::LoadState(state_file.path());
+  REQUIRE(persisted_state.ok());
+  REQUIRE(persisted_state.state.sessions.size() == 1);
+  REQUIRE(persisted_state.state.sessions.at(0).forwards.size() == 1);
+  CHECK(persisted_state.state.sessions.at(0).forwards.at(0).pid == original_pid);
+  CHECK(IsPidAlive(original_pid));
+
+  kubeforward::runtime::PosixProcessRunner cleanup_runner;
+  std::string stop_error;
+  if (IsPidAlive(original_pid)) {
+    CHECK(cleanup_runner.Stop(original_pid, stop_error));
+  }
+  for (const auto& session : persisted_state.state.sessions) {
+    for (const auto& process : session.forwards) {
+      if (process.pid != original_pid && IsPidAlive(process.pid)) {
+        CHECK(cleanup_runner.Stop(process.pid, stop_error));
+      }
+    }
+  }
 }
 
 TEST_CASE("up restores the original session when replacement preflight fails after stop", "[cli]") {
