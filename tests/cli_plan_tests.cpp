@@ -169,7 +169,18 @@ class ScopedListeningSocket {
     if (::listen(fd_, 1) != 0) {
       ::close(fd_);
       fd_ = -1;
+      return;
     }
+
+    sockaddr_in bound_addr{};
+    socklen_t bound_addr_len = sizeof(bound_addr);
+    if (::getsockname(fd_, reinterpret_cast<sockaddr*>(&bound_addr), &bound_addr_len) != 0) {
+      ::close(fd_);
+      fd_ = -1;
+      return;
+    }
+
+    port_ = ntohs(bound_addr.sin_port);
   }
 
   ~ScopedListeningSocket() {
@@ -179,9 +190,11 @@ class ScopedListeningSocket {
   }
 
   bool ok() const { return fd_ >= 0; }
+  int port() const { return port_; }
 
  private:
   int fd_ = -1;
+  int port_ = 0;
 };
 
 std::filesystem::path TempConfigCopyPath(const std::string& stem) {
@@ -246,6 +259,46 @@ std::filesystem::path WriteSingleForwardConfig(const std::string& stem, const st
   return WriteConfigFile(stem, SingleForwardConfigContents(env_name, local_port, bind_address));
 }
 
+std::string TwoForwardConfigContents(const std::string& env_name, int first_local_port, int second_local_port,
+                                     const std::string& bind_address = "127.0.0.1") {
+  return std::string("version: 1\n"
+                     "metadata:\n"
+                     "  project: cli-test\n"
+                     "defaults:\n"
+                     "  namespace: default\n"
+                     "  bindAddress: ") +
+         bind_address +
+         "\n"
+         "environments:\n"
+         "  " +
+         env_name +
+         ":\n"
+         "    forwards:\n"
+         "      - name: api-a\n"
+         "        resource:\n"
+         "          kind: deployment\n"
+         "          name: api-a\n"
+         "        ports:\n"
+         "          - local: " +
+         std::to_string(first_local_port) +
+         "\n"
+         "            remote: 80\n"
+         "      - name: api-b\n"
+         "        resource:\n"
+         "          kind: deployment\n"
+         "          name: api-b\n"
+         "        ports:\n"
+         "          - local: " +
+         std::to_string(second_local_port) +
+         "\n"
+         "            remote: 80\n";
+}
+
+std::filesystem::path WriteTwoForwardConfig(const std::string& stem, const std::string& env_name, int first_local_port,
+                                            int second_local_port, const std::string& bind_address = "127.0.0.1") {
+  return WriteConfigFile(stem, TwoForwardConfigContents(env_name, first_local_port, second_local_port, bind_address));
+}
+
 bool IsPidAlive(int pid) {
   if (pid <= 0) {
     return false;
@@ -290,26 +343,7 @@ int ReserveTcpPort(const std::string& bind_address) {
 int FindAvailableLoopbackPort() {
   for (int attempt = 0; attempt < 32; ++attempt) {
     const int port = ReserveTcpPort("127.0.0.1");
-    if (port <= 0) {
-      continue;
-    }
-
-    const int verify_fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (verify_fd < 0) {
-      continue;
-    }
-
-    sockaddr_in verify_addr{};
-    verify_addr.sin_family = AF_INET;
-    verify_addr.sin_port = htons(static_cast<uint16_t>(port));
-    if (::inet_pton(AF_INET, "127.0.0.2", &verify_addr.sin_addr) != 1) {
-      ::close(verify_fd);
-      return port;
-    }
-
-    const bool available_on_alt = ::bind(verify_fd, reinterpret_cast<const sockaddr*>(&verify_addr), sizeof(verify_addr)) == 0;
-    ::close(verify_fd);
-    if (available_on_alt) {
+    if (port > 0) {
       return port;
     }
   }
@@ -552,10 +586,6 @@ TEST_CASE("up restores the original session when replacement preflight fails aft
   ScopedStateFile state_file;
   const auto kubectl_script = WriteExecutableScript("fake-kubectl", "#!/bin/sh\ntrap 'exit 0' TERM INT\nsleep 30\n");
   const int original_port = FindAvailableLoopbackPort();
-  int blocked_port = FindAvailableLoopbackPort();
-  while (blocked_port == original_port) {
-    blocked_port = FindAvailableLoopbackPort();
-  }
   const auto config_path = WriteSingleForwardConfig("replacement-preflight-failure", "dev", original_port);
   ScopedCleanup cleanup([&]() {
     ScopedEnvVar kubectl_bin("KUBEFORWARD_KUBECTL_BIN", kubectl_script.string().c_str());
@@ -573,9 +603,11 @@ TEST_CASE("up restores the original session when replacement preflight fails aft
   REQUIRE(initial_state.state.sessions.size() == 1);
   const int original_pid = initial_state.state.sessions.at(0).forwards.at(0).pid;
 
-  WriteFile(config_path, SingleForwardConfigContents("dev", blocked_port));
-  ScopedListeningSocket blocker("127.0.0.1", blocked_port);
+  ScopedListeningSocket blocker("127.0.0.1", 0);
   REQUIRE(blocker.ok());
+  REQUIRE(blocker.port() != original_port);
+  const int blocked_port = blocker.port();
+  WriteFile(config_path, SingleForwardConfigContents("dev", blocked_port));
 
   {
     ScopedEnvVar kubectl_bin("KUBEFORWARD_KUBECTL_BIN", kubectl_script.string().c_str());
@@ -648,6 +680,36 @@ TEST_CASE("up keeps foreground sessions attached until the child exits", "[cli]"
 
   REQUIRE(exit_code == 0);
   CHECK(elapsed_ms >= 800);
+
+  const auto state = kubeforward::runtime::LoadState(state_file.path());
+  REQUIRE(state.ok());
+  CHECK(state.state.sessions.empty());
+}
+
+TEST_CASE("up fails foreground sessions when one forward exits before the others", "[cli]") {
+  ScopedStateFile state_file;
+  const auto kubectl_script = WriteExecutableScript(
+      "fake-kubectl-foreground-multi",
+      "#!/bin/sh\n"
+      "local_port=\"${3%%:*}\"\n"
+      "if [ \"$local_port\" = \"$KUBEFORWARD_SHORT_PORT\" ]; then\n"
+      "  sleep 1\n"
+      "else\n"
+      "  trap 'exit 0' TERM INT\n"
+      "  sleep 30\n"
+      "fi\n");
+  const int first_port = FindAvailableLoopbackPort();
+  int second_port = FindAvailableLoopbackPort();
+  while (second_port == first_port) {
+    second_port = FindAvailableLoopbackPort();
+  }
+  const auto config_path = WriteTwoForwardConfig("foreground-up-multi", "dev", first_port, second_port);
+
+  ScopedEnvVar kubectl_bin("KUBEFORWARD_KUBECTL_BIN", kubectl_script.string().c_str());
+  ScopedEnvVar short_port("KUBEFORWARD_SHORT_PORT", std::to_string(first_port).c_str());
+  const auto result = RunAndCapture({"kubeforward", "up", "--file", config_path.string(), "--env", "dev"});
+
+  REQUIRE(result.exit_code == 2);
 
   const auto state = kubeforward::runtime::LoadState(state_file.path());
   REQUIRE(state.ok());

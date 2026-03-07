@@ -916,28 +916,40 @@ std::string DescribeWaitStatus(int status) {
   return "unknown status";
 }
 
+struct ForegroundExitEvent {
+  int pid = 0;
+  int status = 0;
+  std::string forward_name;
+};
+
 int RunForegroundSession(const std::filesystem::path& state_path, const kubeforward::runtime::RuntimeState& state_snapshot,
                          kubeforward::runtime::ManagedSession& session, kubeforward::runtime::ProcessRunner& runner) {
   g_foreground_signal = 0;
   ScopedSignalHandler sigint_handler(SIGINT);
   ScopedSignalHandler sigterm_handler(SIGTERM);
 
+  const size_t total_forwards = session.forwards.size();
   const int poll_interval_ms = 100;
-  int exited_pid = 0;
-  int exited_status = 0;
-  std::string exited_forward_name;
+  std::vector<ForegroundExitEvent> exited_forwards;
+  exited_forwards.reserve(total_forwards);
+  std::set<int> exited_pids;
   while (g_foreground_signal == 0) {
     for (const auto& forward : session.forwards) {
+      if (exited_pids.count(forward.pid) != 0) {
+        continue;
+      }
       int status = 0;
       const pid_t wait_result = ::waitpid(forward.pid, &status, WNOHANG);
       if (wait_result == forward.pid) {
-        exited_pid = forward.pid;
-        exited_status = status;
-        exited_forward_name = forward.forward_name;
-        break;
+        exited_pids.insert(forward.pid);
+        exited_forwards.push_back(ForegroundExitEvent{
+            .pid = forward.pid,
+            .status = status,
+            .forward_name = forward.forward_name,
+        });
       }
     }
-    if (exited_pid != 0) {
+    if (!exited_forwards.empty()) {
       break;
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(poll_interval_ms));
@@ -958,15 +970,33 @@ int RunForegroundSession(const std::filesystem::path& state_path, const kubeforw
     return ExitCodeFromSignal(g_foreground_signal);
   }
 
-  if (WIFEXITED(exited_status) && WEXITSTATUS(exited_status) == 0) {
+  if (exited_forwards.size() == total_forwards) {
+    bool all_succeeded = true;
+    for (const auto& exited_forward : exited_forwards) {
+      if (!WIFEXITED(exited_forward.status) || WEXITSTATUS(exited_forward.status) != 0) {
+        all_succeeded = false;
+        break;
+      }
+    }
+    if (all_succeeded) {
+      return 0;
+    }
+  }
+
+  const auto& first_exited_forward = exited_forwards.front();
+  if (exited_forwards.size() < total_forwards) {
+    std::cerr << "up: foreground forward '" << first_exited_forward.forward_name
+              << "' exited with " << DescribeWaitStatus(first_exited_forward.status)
+              << " while other foreground forwards were still running\n";
+    return 2;
+  }
+
+  if (WIFEXITED(first_exited_forward.status) && WEXITSTATUS(first_exited_forward.status) == 0) {
     return 0;
   }
 
-  std::cerr << "up: foreground forward";
-  if (!exited_forward_name.empty()) {
-    std::cerr << " '" << exited_forward_name << "'";
-  }
-  std::cerr << " exited with " << DescribeWaitStatus(exited_status) << "\n";
+  std::cerr << "up: foreground forward '" << first_exited_forward.forward_name
+            << "' exited with " << DescribeWaitStatus(first_exited_forward.status) << "\n";
   return 2;
 }
 
