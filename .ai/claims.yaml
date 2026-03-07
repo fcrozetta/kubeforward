@@ -1,4 +1,4 @@
-last_updated: 2026-03-07T22:46:00Z
+last_updated: 2026-03-07T23:03:44Z
 claims:
   - id: vcpkg-baseline
     statement: "vcpkg manifest baseline is pinned to commit 81ded1ca9f81437a39dc520c653f3006953308f3."
@@ -119,13 +119,13 @@ claims:
       case: "resolved plan applies default bindAddress to ports; resolved plan inherits forwards for extends environments without local forwards; resolved plan rejects unknown environment filter"
     updated_at: 2026-02-27T19:05:42Z
   - id: runtime-state-store-foundation
-    statement: "Runtime session state is persisted as YAML by config path hash under temp dir (override via KUBEFORWARD_STATE_FILE) and includes session/forward pid metadata."
+    statement: "Runtime session state is persisted as YAML by config path hash under temp dir (override via KUBEFORWARD_STATE_FILE) and includes session/forward pid metadata; config paths are normalized so equivalent spellings map to the same runtime state file."
     source: "Owner decision 2026-02-27"
     validation:
       type: test
       target: "tests/runtime_state_store_tests.cpp"
-      case: "state store round-trips sessions; state store returns empty state for missing files; default state path is deterministic for config path"
-    updated_at: 2026-02-27T19:05:42Z
+      case: "state store round-trips sessions; state store returns empty state for missing files; default state path is deterministic for config path; default state path normalizes equivalent relative config paths"
+    updated_at: 2026-03-07T23:03:44Z
   - id: runtime-process-runner-foundation
     statement: "Process control abstraction includes PosixProcessRunner for real child lifecycle management (foreground/daemon start semantics plus signal-based stop of child-led process groups, including reattached processes loaded from state) and NoopProcessRunner for deterministic tests."
     source: "Owner decision 2026-02-27"
@@ -143,13 +143,13 @@ claims:
       expected: "LOCK_EX/LOCK_SH with temporary file rename"
     updated_at: 2026-02-27T19:58:36Z
   - id: cli-up-kubectl-argv-preflight
-    statement: "up builds kubectl port-forward argv from resolved runtime plan fields, validates the kubectl executable, preserves existing sessions until replacement start/save succeeds, rejects replacement of legacy sessions that cannot be rolled back safely, and requires concrete resource.name targets."
+    statement: "up/down use normalized config path identity, build kubectl port-forward argv from resolved runtime plan fields, validate kubectl executable, preserve existing sessions until replacement start/save succeeds, reject replacement of legacy sessions that cannot be rolled back safely, and require concrete resource.name targets."
     source: "Owner decision 2026-02-27"
     validation:
       type: command
-      command: "rg -n \"BuildKubectlPortForwardArgv|ValidateKubectlExecutable|ValidateSessionsSupportRollback|StartManagedSession|RestoreReplacedSessions|PosixProcessRunner\" src/cli/cli.cpp"
-      expected: "kubectl argv + executable validation + rollback-safety validation + transactional replacement path"
-    updated_at: 2026-02-28T16:11:14Z
+      command: "rg -n \"NormalizePath|BuildKubectlPortForwardArgv|ValidateKubectlExecutable|ValidateSessionsSupportRollback|ShouldSignalManagedProcess|StartManagedSession|RestoreReplacedSessions|PosixProcessRunner\" src/cli/cli.cpp"
+      expected: "normalized runtime identity + kubectl argv + executable validation + pid-signature guardrails + rollback-safety validation + transactional replacement path"
+    updated_at: 2026-03-07T23:03:44Z
   - id: cli-up-foreground-contract
     statement: "up without --daemon stays attached in the foreground until a forward exits or the user interrupts it, then removes the session from runtime state during cleanup."
     source: "Owner decision 2026-02-28"

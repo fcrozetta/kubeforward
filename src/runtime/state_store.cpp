@@ -43,7 +43,7 @@ std::string NormalizeConfigPath(const std::string& config_path) {
   if (ec) {
     return config_path;
   }
-  return absolute_path.string();
+  return absolute_path.lexically_normal().string();
 }
 
 YAML::Node SerializeState(const RuntimeState& state) {

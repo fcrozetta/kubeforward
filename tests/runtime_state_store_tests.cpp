@@ -86,6 +86,19 @@ TEST_CASE("default state path is deterministic for config path", "[runtime]") {
   CHECK(first != other);
 }
 
+TEST_CASE("default state path normalizes equivalent relative config paths", "[runtime]") {
+  const auto base = std::filesystem::temp_directory_path() / "kubeforward-tests-state-path-normalize";
+  std::filesystem::create_directories(base);
+  ScopedCurrentPath cwd(base);
+
+  const auto plain = kubeforward::runtime::DefaultStatePathForConfig("kubeforward.yaml");
+  const auto dotted = kubeforward::runtime::DefaultStatePathForConfig("./kubeforward.yaml");
+  const auto parent_ref = kubeforward::runtime::DefaultStatePathForConfig("folder/../kubeforward.yaml");
+
+  CHECK(plain == dotted);
+  CHECK(plain == parent_ref);
+}
+
 TEST_CASE("state store supports parentless relative paths", "[runtime]") {
   const auto base = std::filesystem::temp_directory_path() / "kubeforward-tests-relative-state";
   std::filesystem::create_directories(base);

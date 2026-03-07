@@ -1,8 +1,10 @@
 #include "kubeforward/cli.h"
 
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <cstdlib>
 #include <ctime>
@@ -608,7 +610,7 @@ std::string NormalizePath(const std::string& raw_path) {
   if (ec) {
     return raw_path;
   }
-  return absolute.string();
+  return absolute.lexically_normal().string();
 }
 
 size_t CountSessionForwards(const kubeforward::runtime::ManagedSession& session) { return session.forwards.size(); }
@@ -742,9 +744,81 @@ bool ValidateSessionsSupportRollback(const std::vector<kubeforward::runtime::Man
   return true;
 }
 
+std::optional<std::string> ReadProcessCommandLine(int pid) {
+  if (pid <= 0) {
+    return std::nullopt;
+  }
+
+  std::array<char, 256> buffer {};
+  std::string output;
+  const std::string command = "ps -p " + std::to_string(pid) + " -o command=";
+  FILE* pipe = ::popen(command.c_str(), "r");
+  if (pipe == nullptr) {
+    return std::nullopt;
+  }
+
+  while (std::fgets(buffer.data(), static_cast<int>(buffer.size()), pipe) != nullptr) {
+    output += buffer.data();
+  }
+
+  const int status = ::pclose(pipe);
+  if (status != 0 || output.empty()) {
+    return std::nullopt;
+  }
+
+  while (!output.empty() && (output.back() == '\n' || output.back() == '\r')) {
+    output.pop_back();
+  }
+  if (output.empty()) {
+    return std::nullopt;
+  }
+
+  return output;
+}
+
+bool ShouldSignalManagedProcess(const kubeforward::runtime::ManagedForwardProcess& process, std::string& reason) {
+  if (UseNoopRunner()) {
+    reason.clear();
+    return true;
+  }
+
+  if (process.pid <= 0 || process.argv.empty()) {
+    reason.clear();
+    return true;
+  }
+
+  const auto live_command = ReadProcessCommandLine(process.pid);
+  if (!live_command.has_value()) {
+    reason = "refusing to signal pid because process identity cannot be verified";
+    return false;
+  }
+
+  const auto expected_binary = std::filesystem::path(process.argv.front()).filename().string();
+  if (expected_binary.empty()) {
+    reason.clear();
+    return true;
+  }
+
+  const std::string expected_port_mapping = std::to_string(process.local_port) + ":" + std::to_string(process.remote_port);
+  if (live_command->find(expected_binary) != std::string::npos &&
+      live_command->find("port-forward") != std::string::npos &&
+      live_command->find(expected_port_mapping) != std::string::npos) {
+    reason.clear();
+    return true;
+  }
+
+  reason = "refusing to signal pid because live command no longer matches managed forward signature";
+  return false;
+}
+
 void StopSessionProcesses(const kubeforward::runtime::ManagedSession& session, kubeforward::runtime::ProcessRunner& runner,
                           const std::string& error_prefix, bool& stop_failed, int& stopped_processes) {
   for (const auto& process : session.forwards) {
+    std::string identity_error;
+    if (!ShouldSignalManagedProcess(process, identity_error)) {
+      std::cerr << error_prefix << process.pid << ": " << identity_error << "\n";
+      continue;
+    }
     std::string stop_error;
     if (!runner.Stop(process.pid, stop_error)) {
       std::cerr << error_prefix << process.pid << ": " << stop_error << "\n";
@@ -1221,6 +1295,11 @@ int RunDownCommand(const std::vector<std::string>& args) {
     }
     bool session_failed = false;
     for (const auto& process : session.forwards) {
+      std::string identity_error;
+      if (!ShouldSignalManagedProcess(process, identity_error)) {
+        std::cerr << "down: skipped pid " << process.pid << ": " << identity_error << "\n";
+        continue;
+      }
       std::string stop_error;
       if (!runner->Stop(process.pid, stop_error)) {
         std::cerr << "down: failed to stop pid " << process.pid << ": " << stop_error << "\n";

@@ -539,6 +539,24 @@ TEST_CASE("down stops tracked sessions when config is missing", "[cli]") {
   CHECK(result.out.find("stopped: 1") != std::string::npos);
 }
 
+TEST_CASE("down matches sessions across equivalent config path spellings", "[cli]") {
+  ScopedEnvVar noop_runner("KUBEFORWARD_USE_NOOP_RUNNER", "1");
+  ScopedStateFile state_file;
+
+  const auto config_copy = TempConfigCopyPath("path-normalization");
+  std::filesystem::copy_file(Fixture("basic.yaml"), config_copy, std::filesystem::copy_options::overwrite_existing);
+  ScopedCurrentPath cwd(config_copy.parent_path());
+  const auto filename = config_copy.filename().string();
+
+  REQUIRE(kubeforward::run_cli({"kubeforward", "up", "--file", filename, "--env", "dev"}) == 0);
+
+  const auto result = RunAndCapture({"kubeforward", "down", "--file", "./" + filename, "--env", "dev", "--verbose"});
+
+  REQUIRE(result.exit_code == 0);
+  CHECK(result.out.find("forwards: 1") != std::string::npos);
+  CHECK(result.out.find("stopped: 1") != std::string::npos);
+}
+
 TEST_CASE("up preserves the running session when replacement kubectl is invalid", "[cli]") {
   ScopedStateFile state_file;
   const auto kubectl_script = WriteExecutableScript("fake-kubectl", "#!/bin/sh\ntrap 'exit 0' TERM INT\nsleep 30\n");
