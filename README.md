@@ -6,19 +6,22 @@
 
 Kubeforward is a macOS-first CLI for config-driven Kubernetes port-forward workflows.
 
-Current implementation status: config loading/validation and `plan` output are implemented; forward execution is not implemented yet.
+Current implementation status: config loading/validation, `plan`, `up`, and `down` are implemented.
 
 ## Quick Start
 
 ```bash
 brew install fcrozetta/tools/kubeforward
 kubeforward help
-kubeforward plan --config kubeforward.yaml
-kubeforward plan --config kubeforward.yaml --env dev
+kubeforward plan --file kubeforward.yaml
+kubeforward up --file kubeforward.yaml --env dev --daemon
+kubeforward down --file kubeforward.yaml --env dev
 ```
 
 - `help` shows global command usage.
 - `plan` validates config and renders a normalized environment/forward summary.
+- `up` starts all forwards in the selected environment.
+- `down` stops tracked forwards for one environment or all environments.
 
 ## Minimal Config
 
@@ -52,12 +55,16 @@ kubeforward plan --env dev
 ## Command Reference
 
 - `kubeforward help`
-- `kubeforward plan [--config <path>] [--env <name>] [--format text]`
+- `kubeforward --version`
+- `kubeforward plan [-f|--file <path>] [-e|--env <name>] [-v|--verbose]`
+- `kubeforward up [-f|--file <path>] [-e|--env <name>] [-d|--daemon] [-v|--verbose]`
+- `kubeforward down [-f|--file <path>] [-e|--env <name>] [-d|--daemon] [-v|--verbose]`
 
 Notes:
 - Unknown environments fail fast.
 - Schema errors are reported with contextual paths.
 - Duplicate local ports within an environment are rejected.
+- `up` without `--daemon` stays attached in the foreground until a forward exits or the user stops it.
 
 ## Config Reference
 

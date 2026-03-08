@@ -1,0 +1,18 @@
+version: 1
+metadata:
+  project: extends-with-defaults
+defaults:
+  namespace: default
+  bindAddress: 127.0.0.1
+environments:
+  base:
+    forwards:
+      - name: base-api
+        resource:
+          kind: deployment
+          name: api
+        ports:
+          - local: 7000
+            remote: 7000
+  child:
+    extends: base

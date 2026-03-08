@@ -1,0 +1,16 @@
+version: 1
+metadata:
+  project: demo-project
+defaults:
+  namespace: default
+environments:
+  dev:
+    forwards:
+      - name: api
+        resource:
+          kind: pod
+          selector:
+            app: api
+        ports:
+          - local: 7000
+            remote: 7000

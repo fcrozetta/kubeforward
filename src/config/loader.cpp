@@ -332,7 +332,7 @@ ResourceSelector ParseResourceSelector(const YAML::Node& node, const std::string
     return selector;
   }
   EnsureAllowedKeys(node, context,
-                    MakeSet(std::vector<std::string>{"kind", "name", "selector", "namespace"}), errors);
+                    MakeSet(std::vector<std::string>{"kind", "name", "namespace"}), errors);
   if (const auto kind_value = ReadOptionalString(node["kind"], context + ".kind", errors)) {
     selector.kind = ParseResourceKind(*kind_value, context + ".kind", errors);
   } else {
@@ -340,21 +340,11 @@ ResourceSelector ParseResourceSelector(const YAML::Node& node, const std::string
   }
 
   const auto name_value = ReadOptionalString(node["name"], context + ".name", errors);
-  const auto selector_node = node["selector"];
-  if (name_value && selector_node) {
-    AddError(errors, context, "name and selector are mutually exclusive");
-  }
   if (name_value) {
     selector.name = name_value;
   }
-  if (selector_node) {
-    selector.selector = ParseStringMap(selector_node, context + ".selector", errors);
-    if (selector.selector.empty()) {
-      AddError(errors, context + ".selector", "selector cannot be empty");
-    }
-  }
-  if (!selector.name.has_value() && selector.selector.empty()) {
-    AddError(errors, context, "resource requires name or selector");
+  if (!selector.name.has_value()) {
+    AddError(errors, context + ".name", "resource name is required");
   }
   if (const auto ns = ReadOptionalString(node["namespace"], context + ".namespace", errors)) {
     selector.namespace_override = ns;
@@ -427,7 +417,7 @@ ForwardDefinition ParseForward(const YAML::Node& node, const std::string& contex
   }
   EnsureAllowedKeys(
       node, context,
-      MakeSet(std::vector<std::string>{"name", "resource", "container", "ports", "annotations", "env"}), errors);
+      MakeSet(std::vector<std::string>{"name", "resource", "ports", "annotations", "env"}), errors);
 
   if (const auto name = ReadOptionalString(node["name"], context + ".name", errors)) {
     forward.name = *name;
@@ -435,9 +425,6 @@ ForwardDefinition ParseForward(const YAML::Node& node, const std::string& contex
     AddError(errors, context + ".name", "forward requires a name");
   }
   forward.resource = ParseResourceSelector(node["resource"], context + ".resource", errors);
-  if (const auto container = ReadOptionalString(node["container"], context + ".container", errors)) {
-    forward.container = container;
-  }
   const auto ports_node = node["ports"];
   if (!NodeIsSequence(ports_node) || ports_node.size() == 0) {
     AddError(errors, context + ".ports", "expected non-empty list");

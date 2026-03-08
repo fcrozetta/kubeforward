@@ -110,3 +110,18 @@ TEST_CASE("config rejects non-ipv4 bindAddress literals", "[config]") {
   }
   REQUIRE(saw_bind_error);
 }
+
+TEST_CASE("config rejects selector-based resources", "[config]") {
+  const auto result = kubeforward::config::LoadConfigFromFile(Fixture("invalid_selector.yaml"));
+  REQUIRE_FALSE(result.ok());
+
+  bool saw_selector_error = false;
+  for (const auto& error : result.errors) {
+    if (error.context == "environments.dev.forwards[0].resource" &&
+        error.message.find("unknown key 'selector'") != std::string::npos) {
+      saw_selector_error = true;
+      break;
+    }
+  }
+  REQUIRE(saw_selector_error);
+}
