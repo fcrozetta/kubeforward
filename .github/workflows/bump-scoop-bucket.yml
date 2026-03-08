@@ -1,9 +1,11 @@
 name: Bump Scoop bucket manifest
 
 on:
-  workflow_run:
-    workflows: ["release"]
-    types: [completed]
+  # Disabled until Windows release assets exist again.
+  # workflow_run:
+  #   workflows: ["release"]
+  #   types: [completed]
+  workflow_dispatch:
 
 permissions:
   contents: read
