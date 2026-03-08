@@ -321,11 +321,6 @@ std::string ResourceKindTargetPrefix(kubeforward::config::ResourceKind kind) {
 }
 
 const char* KubectlBinary() {
-  if (const char* override_bin = std::getenv("KUBEFORWARD_KUBECTL_BIN")) {
-    if (override_bin[0] != '\0') {
-      return override_bin;
-    }
-  }
   return "kubectl";
 }
 
@@ -782,9 +777,14 @@ bool ShouldSignalManagedProcess(const kubeforward::runtime::ManagedForwardProces
     return true;
   }
 
-  if (process.pid <= 0 || process.argv.empty()) {
+  if (process.pid <= 0) {
     reason.clear();
     return true;
+  }
+
+  if (process.argv.empty()) {
+    reason = "refusing to signal pid because runtime state is missing restart metadata (run 'down' after upgrading)";
+    return false;
   }
 
   if (::kill(process.pid, 0) != 0 && errno == ESRCH) {

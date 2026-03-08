@@ -222,6 +222,32 @@ std::filesystem::path WriteExecutableScript(const std::string& stem, const std::
   return path;
 }
 
+std::filesystem::path WriteExecutableFile(const std::filesystem::path& path, const std::string& body) {
+  WriteFile(path, body);
+  std::filesystem::permissions(
+      path,
+      std::filesystem::perms::owner_read | std::filesystem::perms::owner_write | std::filesystem::perms::owner_exec |
+          std::filesystem::perms::group_read | std::filesystem::perms::group_exec |
+          std::filesystem::perms::others_read | std::filesystem::perms::others_exec,
+      std::filesystem::perm_options::replace);
+  return path;
+}
+
+std::filesystem::path WriteKubectlOnPath(const std::string& stem, const std::string& body) {
+  const auto dir = TempDir() / ("kubectl-bin-" + stem + "-" + UniqueSuffix());
+  std::filesystem::create_directories(dir);
+  (void)WriteExecutableFile(dir / "kubectl", body);
+  return dir;
+}
+
+std::string PrependPath(const std::filesystem::path& entry) {
+  const char* existing = std::getenv("PATH");
+  if (existing == nullptr || existing[0] == '\0') {
+    return entry.string();
+  }
+  return entry.string() + ":" + std::string(existing);
+}
+
 std::filesystem::path WriteConfigFile(const std::string& stem, const std::string& body) {
   const auto path = TempPath(stem, ".yaml");
   WriteFile(path, body);
@@ -378,6 +404,23 @@ bool WaitForPortClosed(int port, int timeout_ms = 6000) {
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
   }
   return !CanConnectTcpPort(port);
+}
+
+void StopSessionPidsFromState(const std::filesystem::path& state_path) {
+  const auto state = kubeforward::runtime::LoadState(state_path);
+  if (!state.ok()) {
+    return;
+  }
+
+  kubeforward::runtime::PosixProcessRunner runner;
+  std::string stop_error;
+  for (const auto& session : state.state.sessions) {
+    for (const auto& process : session.forwards) {
+      if (IsPidAlive(process.pid)) {
+        (void)runner.Stop(process.pid, stop_error);
+      }
+    }
+  }
 }
 
 CliResult RunAndCapture(const std::vector<std::string>& args) {
@@ -614,17 +657,73 @@ TEST_CASE("down keeps sessions when process identity cannot be verified", "[cli]
   }
 }
 
+TEST_CASE("down keeps legacy sessions when restart metadata is missing", "[cli]") {
+  ScopedStateFile state_file;
+  const int managed_port = FindAvailableLoopbackPort();
+  const auto config_path = WriteSingleForwardConfig("down-legacy-empty-argv", "dev", managed_port);
+
+  kubeforward::runtime::PosixProcessRunner runner;
+  kubeforward::runtime::StartProcessRequest request;
+  request.argv = {"/bin/sh", "-c", "trap 'exit 0' TERM INT; sleep 30"};
+  request.cwd = std::filesystem::current_path();
+
+  std::string error;
+  const auto started = runner.Start(request, error);
+  REQUIRE(started.has_value());
+  REQUIRE(error.empty());
+  const int managed_pid = started->pid;
+  REQUIRE(IsPidAlive(managed_pid));
+
+  kubeforward::runtime::RuntimeState state;
+  kubeforward::runtime::ManagedSession session;
+  session.id = "legacy-session-down";
+  session.config_path = std::filesystem::absolute(config_path).string();
+  session.environment = "dev";
+  session.daemon = true;
+  session.started_at_utc = "2026-03-08T00:00:00Z";
+  session.forwards.push_back(kubeforward::runtime::ManagedForwardProcess{
+      .environment = "dev",
+      .forward_name = "api",
+      .argv = {},
+      .cwd = request.cwd.string(),
+      .bind_address = "127.0.0.1",
+      .local_port = managed_port,
+      .remote_port = 80,
+      .protocol = kubeforward::config::PortProtocol::kTcp,
+      .pid = managed_pid,
+  });
+  state.sessions.push_back(session);
+  REQUIRE(kubeforward::runtime::SaveState(state_file.path(), state, error));
+  REQUIRE(error.empty());
+
+  const auto result =
+      RunAndCapture({"kubeforward", "down", "--file", config_path.string(), "--env", "dev", "--verbose"});
+  REQUIRE(result.exit_code == 2);
+  CHECK(result.err.find("missing restart metadata") != std::string::npos);
+  CHECK(result.err.find("skipped pid") != std::string::npos);
+
+  const auto persisted_state = kubeforward::runtime::LoadState(state_file.path());
+  REQUIRE(persisted_state.ok());
+  REQUIRE(persisted_state.state.sessions.size() == 1);
+  REQUIRE(persisted_state.state.sessions.at(0).forwards.size() == 1);
+  CHECK(persisted_state.state.sessions.at(0).forwards.at(0).pid == managed_pid);
+  CHECK(IsPidAlive(managed_pid));
+
+  std::string stop_error;
+  if (IsPidAlive(managed_pid)) {
+    CHECK(runner.Stop(managed_pid, stop_error));
+  }
+}
+
 TEST_CASE("up preserves the running session when replacement kubectl is invalid", "[cli]") {
   ScopedStateFile state_file;
-  const auto kubectl_script = WriteExecutableScript("fake-kubectl", "#!/bin/sh\ntrap 'exit 0' TERM INT\nsleep 30\n");
+  const auto kubectl_dir = WriteKubectlOnPath("fake-kubectl", "#!/bin/sh\ntrap 'exit 0' TERM INT\nsleep 30\n");
+  const auto kubectl_path = PrependPath(kubectl_dir);
   const auto config_copy = WriteSingleForwardConfig("replacement-invalid-kubectl", "dev", FindAvailableLoopbackPort());
-  ScopedCleanup cleanup([&]() {
-    ScopedEnvVar kubectl_bin("KUBEFORWARD_KUBECTL_BIN", kubectl_script.string().c_str());
-    (void)kubeforward::run_cli({"kubeforward", "down", "--file", config_copy.string(), "--env", "dev"});
-  });
+  ScopedCleanup cleanup([&]() { StopSessionPidsFromState(state_file.path()); });
 
   {
-    ScopedEnvVar kubectl_bin("KUBEFORWARD_KUBECTL_BIN", kubectl_script.string().c_str());
+    ScopedEnvVar kubectl_bin("PATH", kubectl_path.c_str());
     REQUIRE(kubeforward::run_cli({"kubeforward", "up", "--file", config_copy.string(), "--env", "dev", "--daemon"}) ==
             0);
   }
@@ -637,7 +736,10 @@ TEST_CASE("up preserves the running session when replacement kubectl is invalid"
   REQUIRE(IsPidAlive(original_pid));
 
   {
-    ScopedEnvVar invalid_kubectl("KUBEFORWARD_KUBECTL_BIN", "/path/that/does/not/exist");
+    const auto empty_dir = TempDir() / ("path-without-kubectl-" + UniqueSuffix());
+    std::filesystem::create_directories(empty_dir);
+    const auto missing_kubectl_path = empty_dir.string();
+    ScopedEnvVar invalid_kubectl("PATH", missing_kubectl_path.c_str());
     const auto result = RunAndCapture({"kubeforward", "up", "--file", config_copy.string(), "--env", "dev"});
     REQUIRE(result.exit_code == 2);
     CHECK(result.err.find("kubectl executable is not available") != std::string::npos);
@@ -650,27 +752,25 @@ TEST_CASE("up preserves the running session when replacement kubectl is invalid"
   CHECK(after_failure_state.state.sessions.at(0).forwards.at(0).pid == original_pid);
   CHECK(IsPidAlive(original_pid));
 
-  {
-    ScopedEnvVar kubectl_bin("KUBEFORWARD_KUBECTL_BIN", kubectl_script.string().c_str());
-    REQUIRE(kubeforward::run_cli({"kubeforward", "down", "--file", config_copy.string(), "--env", "dev"}) == 0);
-  }
+  StopSessionPidsFromState(state_file.path());
   cleanup.Dismiss();
 }
 
 TEST_CASE("up replacement fails when old process identity cannot be verified", "[cli]") {
   ScopedStateFile state_file;
-  const auto kubectl_script = WriteExecutableScript(
+  const auto kubectl_dir = WriteKubectlOnPath(
       "fake-kubectl-up-mismatch",
       "#!/bin/sh\n"
       "trap 'exit 0' TERM INT\n"
       "sleep 30\n");
+  const auto kubectl_path = PrependPath(kubectl_dir);
   const int original_port = FindAvailableLoopbackPort();
   int replacement_port = FindAvailableLoopbackPort();
   while (replacement_port == original_port) {
     replacement_port = FindAvailableLoopbackPort();
   }
   const auto config_path = WriteSingleForwardConfig("replacement-identity-mismatch", "dev", replacement_port);
-  ScopedEnvVar kubectl_bin("KUBEFORWARD_KUBECTL_BIN", kubectl_script.string().c_str());
+  ScopedEnvVar kubectl_bin("PATH", kubectl_path.c_str());
 
   kubeforward::runtime::PosixProcessRunner runner;
   kubeforward::runtime::StartProcessRequest request;
@@ -734,16 +834,14 @@ TEST_CASE("up replacement fails when old process identity cannot be verified", "
 
 TEST_CASE("up restores the original session when replacement preflight fails after stop", "[cli]") {
   ScopedStateFile state_file;
-  const auto kubectl_script = WriteExecutableScript("fake-kubectl", "#!/bin/sh\ntrap 'exit 0' TERM INT\nsleep 30\n");
+  const auto kubectl_dir = WriteKubectlOnPath("fake-kubectl", "#!/bin/sh\ntrap 'exit 0' TERM INT\nsleep 30\n");
+  const auto kubectl_path = PrependPath(kubectl_dir);
   const int original_port = FindAvailableLoopbackPort();
   const auto config_path = WriteSingleForwardConfig("replacement-preflight-failure", "dev", original_port);
-  ScopedCleanup cleanup([&]() {
-    ScopedEnvVar kubectl_bin("KUBEFORWARD_KUBECTL_BIN", kubectl_script.string().c_str());
-    (void)kubeforward::run_cli({"kubeforward", "down", "--file", config_path.string(), "--env", "dev"});
-  });
+  ScopedCleanup cleanup([&]() { StopSessionPidsFromState(state_file.path()); });
 
   {
-    ScopedEnvVar kubectl_bin("KUBEFORWARD_KUBECTL_BIN", kubectl_script.string().c_str());
+    ScopedEnvVar kubectl_bin("PATH", kubectl_path.c_str());
     REQUIRE(kubeforward::run_cli({"kubeforward", "up", "--file", config_path.string(), "--env", "dev", "--daemon"}) ==
             0);
   }
@@ -760,7 +858,7 @@ TEST_CASE("up restores the original session when replacement preflight fails aft
   WriteFile(config_path, SingleForwardConfigContents("dev", blocked_port));
 
   {
-    ScopedEnvVar kubectl_bin("KUBEFORWARD_KUBECTL_BIN", kubectl_script.string().c_str());
+    ScopedEnvVar kubectl_bin("PATH", kubectl_path.c_str());
     const auto result = RunAndCapture({"kubeforward", "up", "--file", config_path.string(), "--env", "dev"});
     REQUIRE(result.exit_code == 2);
     CHECK(result.err.find("previous session was restored") != std::string::npos);
@@ -774,10 +872,7 @@ TEST_CASE("up restores the original session when replacement preflight fails aft
   CHECK(restored_state.state.sessions.at(0).forwards.at(0).pid != original_pid);
   CHECK(IsPidAlive(restored_state.state.sessions.at(0).forwards.at(0).pid));
 
-  {
-    ScopedEnvVar kubectl_bin("KUBEFORWARD_KUBECTL_BIN", kubectl_script.string().c_str());
-    REQUIRE(kubeforward::run_cli({"kubeforward", "down", "--file", config_path.string(), "--env", "dev"}) == 0);
-  }
+  StopSessionPidsFromState(state_file.path());
   cleanup.Dismiss();
 }
 
@@ -794,7 +889,7 @@ TEST_CASE("up stops started forwards when state persistence fails", "[cli]") {
   ScopedEnvVar state_file("KUBEFORWARD_STATE_FILE", state_path.string().c_str());
 
   const int local_port = FindAvailableLoopbackPort();
-  const auto kubectl_script = WriteExecutableScript(
+  const auto kubectl_dir = WriteKubectlOnPath(
       "fake-kubectl-binder",
       "#!/bin/sh\n"
       "local_port=\"${3%%:*}\"\n"
@@ -806,8 +901,8 @@ TEST_CASE("up stops started forwards when state persistence fails", "[cli]") {
       "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
       "signal.signal(signal.SIGINT, signal.SIG_IGN); "
       "time.sleep(30)' \"$local_port\"\n");
-
-  ScopedEnvVar kubectl_bin("KUBEFORWARD_KUBECTL_BIN", kubectl_script.string().c_str());
+  const auto kubectl_path = PrependPath(kubectl_dir);
+  ScopedEnvVar kubectl_bin("PATH", kubectl_path.c_str());
   const auto config_path = WriteSingleForwardConfig("state-save-failure", "dev", local_port);
   const auto result = RunAndCapture({"kubeforward", "up", "--file", config_path.string(), "--env", "dev"});
   REQUIRE(result.exit_code == 2);
@@ -819,10 +914,11 @@ TEST_CASE("up stops started forwards when state persistence fails", "[cli]") {
 
 TEST_CASE("up keeps foreground sessions attached until the child exits", "[cli]") {
   ScopedStateFile state_file;
-  const auto kubectl_script = WriteExecutableScript("fake-kubectl-foreground", "#!/bin/sh\nsleep 1\n");
+  const auto kubectl_dir = WriteKubectlOnPath("fake-kubectl-foreground", "#!/bin/sh\nsleep 1\n");
+  const auto kubectl_path = PrependPath(kubectl_dir);
   const auto config_path = WriteSingleForwardConfig("foreground-up", "dev", FindAvailableLoopbackPort());
 
-  ScopedEnvVar kubectl_bin("KUBEFORWARD_KUBECTL_BIN", kubectl_script.string().c_str());
+  ScopedEnvVar kubectl_bin("PATH", kubectl_path.c_str());
   const auto start = std::chrono::steady_clock::now();
   const int exit_code = kubeforward::run_cli({"kubeforward", "up", "--file", config_path.string(), "--env", "dev"});
   const auto elapsed_ms =
@@ -838,7 +934,7 @@ TEST_CASE("up keeps foreground sessions attached until the child exits", "[cli]"
 
 TEST_CASE("up fails foreground sessions when one forward exits before the others", "[cli]") {
   ScopedStateFile state_file;
-  const auto kubectl_script = WriteExecutableScript(
+  const auto kubectl_dir = WriteKubectlOnPath(
       "fake-kubectl-foreground-multi",
       "#!/bin/sh\n"
       "local_port=\"${3%%:*}\"\n"
@@ -848,6 +944,7 @@ TEST_CASE("up fails foreground sessions when one forward exits before the others
       "  trap 'exit 0' TERM INT\n"
       "  sleep 30\n"
       "fi\n");
+  const auto kubectl_path = PrependPath(kubectl_dir);
   const int first_port = FindAvailableLoopbackPort();
   int second_port = FindAvailableLoopbackPort();
   while (second_port == first_port) {
@@ -855,7 +952,7 @@ TEST_CASE("up fails foreground sessions when one forward exits before the others
   }
   const auto config_path = WriteTwoForwardConfig("foreground-up-multi", "dev", first_port, second_port);
 
-  ScopedEnvVar kubectl_bin("KUBEFORWARD_KUBECTL_BIN", kubectl_script.string().c_str());
+  ScopedEnvVar kubectl_bin("PATH", kubectl_path.c_str());
   ScopedEnvVar short_port("KUBEFORWARD_SHORT_PORT", std::to_string(first_port).c_str());
   const auto result = RunAndCapture({"kubeforward", "up", "--file", config_path.string(), "--env", "dev"});
 
@@ -900,7 +997,6 @@ TEST_CASE("up refuses to replace sessions that cannot be rolled back safely", "[
   REQUIRE(error.empty());
 
   {
-    ScopedEnvVar kubectl_bin("KUBEFORWARD_KUBECTL_BIN", kubectl_script.string().c_str());
     const auto result = RunAndCapture({"kubeforward", "up", "--file", config_path.string(), "--env", "dev"});
     REQUIRE(result.exit_code == 2);
     CHECK(result.err.find("cannot be replaced safely") != std::string::npos);
