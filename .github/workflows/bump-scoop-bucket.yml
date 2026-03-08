@@ -1,18 +1,18 @@
 name: Bump Scoop bucket manifest
 
 on:
+  # Disabled until Windows release assets exist again.
+  # workflow_run:
+  #   workflows: ["release"]
+  #   types: [completed]
   workflow_dispatch:
-    inputs:
-      version:
-        description: Semver release tag to publish to the Scoop bucket
-        required: true
-        type: string
 
 permissions:
   contents: read
 
 jobs:
   bump:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     env:
       BUCKET_REPO: fcrozetta/scoop-bucket
@@ -24,13 +24,46 @@ jobs:
         id: meta
         run: |
           set -euo pipefail
+          HEAD_SHA="${{ github.event.workflow_run.head_sha }}"
+          HEAD_REF="${{ github.event.workflow_run.head_branch }}"
 
-          VERSION="${{ inputs.version }}"
-          if [[ ! "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Version must be a semver tag like 1.2.3." >&2
-            exit 1
+          VERSION=""
+          if [[ "${HEAD_REF}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            if git ls-remote --tags "https://github.com/${{ github.repository }}.git" \
+              "refs/tags/${HEAD_REF}" "refs/tags/${HEAD_REF}^{}" \
+              | awk -v sha="${HEAD_SHA}" '$1 == sha { found = 1 } END { exit(found ? 0 : 1) }'; then
+              VERSION="${HEAD_REF}"
+            else
+              echo "workflow_run.head_branch (${HEAD_REF}) is semver but does not resolve to head SHA ${HEAD_SHA}" >&2
+              exit 1
+            fi
           fi
 
+          if [[ -z "${VERSION}" ]]; then
+            mapfile -t MATCHING_TAGS < <(
+              git ls-remote --tags "https://github.com/${{ github.repository }}.git" \
+                | awk -v sha="${HEAD_SHA}" '$1 == sha {
+                    ref = $2
+                    sub("^refs/tags/", "", ref)
+                    sub("\\^\\{\\}$", "", ref)
+                    if (ref ~ /^[0-9]+\.[0-9]+\.[0-9]+$/) print ref
+                  }' \
+                | sort -u
+            )
+
+            if [[ "${#MATCHING_TAGS[@]}" -eq 1 ]]; then
+              VERSION="${MATCHING_TAGS[0]}"
+            elif [[ "${#MATCHING_TAGS[@]}" -gt 1 ]]; then
+              echo "Ambiguous semver tags for head SHA ${HEAD_SHA}: ${MATCHING_TAGS[*]}" >&2
+              echo "workflow_run.head_branch=${HEAD_REF}" >&2
+              exit 1
+            fi
+          fi
+
+          if [[ -z "${VERSION}" || ! "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Unable to resolve semver release tag for workflow_run head SHA ${HEAD_SHA}" >&2
+            exit 1
+          fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "release_url=https://github.com/${{ github.repository }}/releases/tag/${VERSION}" >> "$GITHUB_OUTPUT"
 
