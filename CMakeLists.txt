@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(kubeforward VERSION 0.1.0 LANGUAGES CXX)
+project(kubeforward VERSION 0.0.15 LANGUAGES CXX)
 
 enable_testing()
 
@@ -8,7 +8,11 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-set(KF_APP_VERSION "0.0.0" CACHE STRING "kubeforward CLI version string")
+if(NOT DEFINED KF_APP_VERSION OR KF_APP_VERSION STREQUAL "0.0.0")
+  set(KF_APP_VERSION "${PROJECT_VERSION}" CACHE STRING "kubeforward CLI version string" FORCE)
+else()
+  set(KF_APP_VERSION "${KF_APP_VERSION}" CACHE STRING "kubeforward CLI version string")
+endif()
 
 find_package(cxxopts CONFIG REQUIRED)
 find_package(yaml-cpp CONFIG REQUIRED)
