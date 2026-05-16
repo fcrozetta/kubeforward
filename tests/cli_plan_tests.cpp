@@ -510,6 +510,40 @@ TEST_CASE("up supports daemon mode and explicit environment", "[cli]") {
   CHECK(result.out.find("mode: daemon") != std::string::npos);
 }
 
+TEST_CASE("up daemon fails when kubectl exits before opening the local port", "[cli]") {
+  ScopedStateFile state_file;
+  const auto config_path = WriteSingleForwardConfig("daemon-exits-early", "dev", FindAvailableLoopbackPort());
+  const auto kubectl_dir = WriteKubectlOnPath("fake-kubectl-exits", "#!/bin/sh\nexit 42\n");
+  const auto kubectl_path = PrependPath(kubectl_dir);
+
+  ScopedEnvVar kubectl_bin("PATH", kubectl_path.c_str());
+  const auto result = RunAndCapture({"kubeforward", "up", "--file", config_path.string(), "--env", "dev", "--daemon"});
+
+  REQUIRE(result.exit_code == 2);
+  CHECK(result.err.find("exited before becoming ready") != std::string::npos);
+
+  const auto state = kubeforward::runtime::LoadState(state_file.path());
+  REQUIRE(state.ok());
+  CHECK(state.state.sessions.empty());
+}
+
+TEST_CASE("up foreground fails when kubectl exits before opening the local port", "[cli]") {
+  ScopedStateFile state_file;
+  const auto config_path = WriteSingleForwardConfig("foreground-exits-early", "dev", FindAvailableLoopbackPort());
+  const auto kubectl_dir = WriteKubectlOnPath("fake-kubectl-foreground-exits", "#!/bin/sh\nexit 42\n");
+  const auto kubectl_path = PrependPath(kubectl_dir);
+
+  ScopedEnvVar kubectl_bin("PATH", kubectl_path.c_str());
+  const auto result = RunAndCapture({"kubeforward", "up", "--file", config_path.string(), "--env", "dev"});
+
+  REQUIRE(result.exit_code == 2);
+  CHECK(result.err.find("exited before becoming ready") != std::string::npos);
+
+  const auto state = kubeforward::runtime::LoadState(state_file.path());
+  REQUIRE(state.ok());
+  CHECK(state.state.sessions.empty());
+}
+
 TEST_CASE("up supports verbose output", "[cli]") {
   ScopedEnvVar noop_runner("KUBEFORWARD_USE_NOOP_RUNNER", "1");
   ScopedStateFile state_file;
@@ -724,6 +758,7 @@ TEST_CASE("up preserves the running session when replacement kubectl is invalid"
 
   {
     ScopedEnvVar kubectl_bin("PATH", kubectl_path.c_str());
+    ScopedEnvVar skip_readiness("KUBEFORWARD_SKIP_READINESS_CHECK", "1");
     REQUIRE(kubeforward::run_cli({"kubeforward", "up", "--file", config_copy.string(), "--env", "dev", "--daemon"}) ==
             0);
   }
@@ -842,6 +877,7 @@ TEST_CASE("up restores the original session when replacement preflight fails aft
 
   {
     ScopedEnvVar kubectl_bin("PATH", kubectl_path.c_str());
+    ScopedEnvVar skip_readiness("KUBEFORWARD_SKIP_READINESS_CHECK", "1");
     REQUIRE(kubeforward::run_cli({"kubeforward", "up", "--file", config_path.string(), "--env", "dev", "--daemon"}) ==
             0);
   }
@@ -859,6 +895,7 @@ TEST_CASE("up restores the original session when replacement preflight fails aft
 
   {
     ScopedEnvVar kubectl_bin("PATH", kubectl_path.c_str());
+    ScopedEnvVar skip_readiness("KUBEFORWARD_SKIP_READINESS_CHECK", "1");
     const auto result = RunAndCapture({"kubeforward", "up", "--file", config_path.string(), "--env", "dev"});
     REQUIRE(result.exit_code == 2);
     CHECK(result.err.find("previous session was restored") != std::string::npos);
@@ -889,20 +926,10 @@ TEST_CASE("up stops started forwards when state persistence fails", "[cli]") {
   ScopedEnvVar state_file("KUBEFORWARD_STATE_FILE", state_path.string().c_str());
 
   const int local_port = FindAvailableLoopbackPort();
-  const auto kubectl_dir = WriteKubectlOnPath(
-      "fake-kubectl-binder",
-      "#!/bin/sh\n"
-      "local_port=\"${3%%:*}\"\n"
-      "exec /usr/bin/python3 -c 'import signal, socket, sys, time; "
-      "s = socket.socket(); "
-      "s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); "
-      "s.bind((\"127.0.0.1\", int(sys.argv[1]))); "
-      "s.listen(1); "
-      "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
-      "signal.signal(signal.SIGINT, signal.SIG_IGN); "
-      "time.sleep(30)' \"$local_port\"\n");
+  const auto kubectl_dir = WriteKubectlOnPath("fake-kubectl-binder", "#!/bin/sh\ntrap 'exit 0' TERM INT\nsleep 30\n");
   const auto kubectl_path = PrependPath(kubectl_dir);
   ScopedEnvVar kubectl_bin("PATH", kubectl_path.c_str());
+  ScopedEnvVar skip_readiness("KUBEFORWARD_SKIP_READINESS_CHECK", "1");
   const auto config_path = WriteSingleForwardConfig("state-save-failure", "dev", local_port);
   const auto result = RunAndCapture({"kubeforward", "up", "--file", config_path.string(), "--env", "dev"});
   REQUIRE(result.exit_code == 2);
@@ -919,6 +946,7 @@ TEST_CASE("up keeps foreground sessions attached until the child exits", "[cli]"
   const auto config_path = WriteSingleForwardConfig("foreground-up", "dev", FindAvailableLoopbackPort());
 
   ScopedEnvVar kubectl_bin("PATH", kubectl_path.c_str());
+  ScopedEnvVar skip_readiness("KUBEFORWARD_SKIP_READINESS_CHECK", "1");
   const auto start = std::chrono::steady_clock::now();
   const int exit_code = kubeforward::run_cli({"kubeforward", "up", "--file", config_path.string(), "--env", "dev"});
   const auto elapsed_ms =
@@ -954,6 +982,7 @@ TEST_CASE("up fails foreground sessions when one forward exits before the others
 
   ScopedEnvVar kubectl_bin("PATH", kubectl_path.c_str());
   ScopedEnvVar short_port("KUBEFORWARD_SHORT_PORT", std::to_string(first_port).c_str());
+  ScopedEnvVar skip_readiness("KUBEFORWARD_SKIP_READINESS_CHECK", "1");
   const auto result = RunAndCapture({"kubeforward", "up", "--file", config_path.string(), "--env", "dev"});
 
   REQUIRE(result.exit_code == 2);
