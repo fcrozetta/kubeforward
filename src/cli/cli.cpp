@@ -65,6 +65,8 @@ volatile sig_atomic_t g_foreground_signal = 0;
 
 void HandleForegroundSignal(int signal_number) { g_foreground_signal = signal_number; }
 
+std::string DescribeWaitStatus(int status);
+
 void PrintGeneralHelp() {
   std::cout << "kubeforward CLI\n"
             << "\n"
@@ -331,6 +333,13 @@ bool UseNoopRunner() {
   return false;
 }
 
+bool SkipReadinessCheck() {
+  if (const char* value = std::getenv("KUBEFORWARD_SKIP_READINESS_CHECK")) {
+    return std::string(value) == "1";
+  }
+  return false;
+}
+
 std::unique_ptr<kubeforward::runtime::ProcessRunner> MakeProcessRunner() {
   if (UseNoopRunner()) {
     return std::make_unique<kubeforward::runtime::NoopProcessRunner>();
@@ -430,6 +439,88 @@ bool CheckPortAvailability(const kubeforward::config::PortMapping& port, std::st
   ::close(fd);
   error.clear();
   return true;
+}
+
+int StartupTimeoutMs() {
+  constexpr int kDefaultStartupTimeoutMs = 10000;
+  constexpr int kMinimumStartupTimeoutMs = 100;
+  constexpr int kMaximumStartupTimeoutMs = 600000;
+
+  const char* value = std::getenv("KUBEFORWARD_STARTUP_TIMEOUT_MS");
+  if (value == nullptr || value[0] == '\0') {
+    return kDefaultStartupTimeoutMs;
+  }
+
+  char* end = nullptr;
+  errno = 0;
+  const long parsed = std::strtol(value, &end, 10);
+  if (errno != 0 || end == value || *end != '\0' || parsed < kMinimumStartupTimeoutMs ||
+      parsed > kMaximumStartupTimeoutMs) {
+    return kDefaultStartupTimeoutMs;
+  }
+
+  return static_cast<int>(parsed);
+}
+
+bool CanConnectTcpPort(const std::string& bind_address, int port) {
+  const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+  if (fd < 0) {
+    return errno == EPERM || errno == EACCES;
+  }
+
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(static_cast<uint16_t>(port));
+  if (::inet_pton(AF_INET, bind_address.c_str(), &addr.sin_addr) != 1) {
+    ::close(fd);
+    return false;
+  }
+
+  const bool connected = ::connect(fd, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) == 0;
+  ::close(fd);
+  return connected;
+}
+
+std::optional<int> PollProcessExitStatus(int pid) {
+  if (pid <= 0) {
+    return std::nullopt;
+  }
+
+  int status = 0;
+  const pid_t wait_result = ::waitpid(static_cast<pid_t>(pid), &status, WNOHANG);
+  if (wait_result == static_cast<pid_t>(pid)) {
+    return status;
+  }
+  return std::nullopt;
+}
+
+bool WaitForForwardReady(const kubeforward::runtime::ManagedForwardProcess& process, std::string& error) {
+  const int timeout_ms = StartupTimeoutMs();
+  const int poll_interval_ms = 100;
+  int waited_ms = 0;
+
+  while (waited_ms <= timeout_ms) {
+    if (CanConnectTcpPort(process.bind_address, process.local_port)) {
+      error.clear();
+      return true;
+    }
+
+    const auto exit_status = PollProcessExitStatus(process.pid);
+    if (exit_status.has_value()) {
+      error = "forward '" + process.forward_name + "' exited before becoming ready with " +
+              DescribeWaitStatus(*exit_status);
+      return false;
+    }
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(poll_interval_ms));
+    waited_ms += poll_interval_ms;
+  }
+
+  std::ostringstream oss;
+  oss << "forward '" << process.forward_name << "' did not open "
+      << process.bind_address << ":" << process.local_port << " within " << timeout_ms << "ms";
+  error = oss.str();
+  return false;
 }
 
 std::string SanitizeLogToken(const std::string& token) {
@@ -857,7 +948,7 @@ bool StartManagedSession(const std::string& normalized_config_path,
       return false;
     }
 
-    session.forwards.push_back(kubeforward::runtime::ManagedForwardProcess{
+    kubeforward::runtime::ManagedForwardProcess process{
         .environment = resolved_env.name,
         .forward_name = launch.forward_name,
         .argv = launch.request.argv,
@@ -868,7 +959,13 @@ bool StartManagedSession(const std::string& normalized_config_path,
         .remote_port = launch.port.remote_port,
         .protocol = launch.port.protocol,
         .pid = started->pid,
-    });
+    };
+    session.forwards.push_back(process);
+
+    if (!UseNoopRunner() && !SkipReadinessCheck() && !WaitForForwardReady(process, error)) {
+      StopStartedSession(session, runner);
+      return false;
+    }
   }
 
   error.clear();
@@ -900,6 +997,11 @@ bool StartManagedSession(const kubeforward::runtime::ManagedSession& snapshot,
     restored_forward.cwd = launch.request.cwd.string();
     restored_forward.log_path = launch.request.log_path.string();
     session.forwards.push_back(std::move(restored_forward));
+
+    if (!UseNoopRunner() && !SkipReadinessCheck() && !WaitForForwardReady(session.forwards.back(), error)) {
+      StopStartedSession(session, runner);
+      return false;
+    }
   }
 
   error.clear();
