@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(kubeforward VERSION 0.0.15 LANGUAGES CXX)
+project(kubeforward VERSION 0.0.16 LANGUAGES CXX)
 
 enable_testing()
 
