@@ -308,6 +308,11 @@ struct CommandOptions {
 
 const char* RunMode(bool daemon) { return daemon ? "daemon" : "foreground"; }
 
+enum class TcpPortReadinessProbe {
+  kNotReady,
+  kReady,
+};
+
 std::string ResourceKindTargetPrefix(kubeforward::config::ResourceKind kind) {
   switch (kind) {
     case kubeforward::config::ResourceKind::kPod:
@@ -462,23 +467,54 @@ int StartupTimeoutMs() {
   return static_cast<int>(parsed);
 }
 
-bool CanConnectTcpPort(const std::string& bind_address, int port) {
-  const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-  if (fd < 0) {
-    return errno == EPERM || errno == EACCES;
+std::string ShellQuote(const std::string& value) {
+  std::string quoted = "'";
+  for (char ch : value) {
+    if (ch == '\'') {
+      quoted += "'\\''";
+    } else {
+      quoted.push_back(ch);
+    }
   }
+  quoted += "'";
+  return quoted;
+}
 
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_port = htons(static_cast<uint16_t>(port));
-  if (::inet_pton(AF_INET, bind_address.c_str(), &addr.sin_addr) != 1) {
-    ::close(fd);
+bool CommandProducesOutput(const std::string& command) {
+  FILE* pipe = ::popen(command.c_str(), "r");
+  if (pipe == nullptr) {
     return false;
   }
 
-  const bool connected = ::connect(fd, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) == 0;
-  ::close(fd);
-  return connected;
+  std::array<char, 128> buffer {};
+  std::string output;
+  while (std::fgets(buffer.data(), static_cast<int>(buffer.size()), pipe) != nullptr) {
+    output += buffer.data();
+  }
+
+  const int status = ::pclose(pipe);
+  return status == 0 && !output.empty();
+}
+
+TcpPortReadinessProbe ProbeTcpPortListeningForReadiness(const std::string& bind_address, int port) {
+  if (const auto lsof_path = ResolveExecutablePath("lsof")) {
+    std::ostringstream command;
+    command << ShellQuote(lsof_path->string()) << " -nP -iTCP@" << ShellQuote(bind_address) << ":" << port
+            << " -sTCP:LISTEN -t 2>/dev/null";
+    if (CommandProducesOutput(command.str())) {
+      return TcpPortReadinessProbe::kReady;
+    }
+  }
+
+  if (const auto ss_path = ResolveExecutablePath("ss")) {
+    std::ostringstream command;
+    command << ShellQuote(ss_path->string()) << " -H -ltn sport = :" << port << " 2>/dev/null";
+    if (CommandProducesOutput(command.str())) {
+      return TcpPortReadinessProbe::kReady;
+    }
+  }
+
+  return TcpPortReadinessProbe::kNotReady;
 }
 
 std::optional<int> PollProcessExitStatus(int pid) {
@@ -500,16 +536,17 @@ bool WaitForForwardReady(const kubeforward::runtime::ManagedForwardProcess& proc
   int waited_ms = 0;
 
   while (waited_ms <= timeout_ms) {
-    if (CanConnectTcpPort(process.bind_address, process.local_port)) {
-      error.clear();
-      return true;
-    }
-
     const auto exit_status = PollProcessExitStatus(process.pid);
     if (exit_status.has_value()) {
       error = "forward '" + process.forward_name + "' exited before becoming ready with " +
               DescribeWaitStatus(*exit_status);
       return false;
+    }
+
+    const auto readiness = ProbeTcpPortListeningForReadiness(process.bind_address, process.local_port);
+    if (readiness == TcpPortReadinessProbe::kReady) {
+      error.clear();
+      return true;
     }
 
     std::this_thread::sleep_for(std::chrono::milliseconds(poll_interval_ms));

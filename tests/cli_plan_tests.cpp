@@ -8,6 +8,7 @@
 #include <functional>
 #include <iostream>
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <signal.h>
 #include <sstream>
@@ -191,6 +192,22 @@ class ScopedListeningSocket {
 
   bool ok() const { return fd_ >= 0; }
   int port() const { return port_; }
+
+  bool AcceptPending() const {
+    if (fd_ < 0) {
+      return false;
+    }
+    const int flags = ::fcntl(fd_, F_GETFL, 0);
+    if (flags >= 0) {
+      (void)::fcntl(fd_, F_SETFL, flags | O_NONBLOCK);
+    }
+    const int accepted = ::accept(fd_, nullptr, nullptr);
+    if (accepted < 0) {
+      return false;
+    }
+    ::close(accepted);
+    return true;
+  }
 
  private:
   int fd_ = -1;
@@ -542,6 +559,63 @@ TEST_CASE("up foreground fails when kubectl exits before opening the local port"
   const auto state = kubeforward::runtime::LoadState(state_file.path());
   REQUIRE(state.ok());
   CHECK(state.state.sessions.empty());
+}
+
+TEST_CASE("up readiness does not connect to the forwarded local port", "[cli]") {
+  ScopedStateFile state_file;
+  const int local_port = FindAvailableLoopbackPort();
+  const auto config_path = WriteSingleForwardConfig("daemon-passive-readiness", "dev", local_port);
+  const auto kubectl_dir = WriteKubectlOnPath(
+      "fake-kubectl-passive-readiness",
+      "#!/bin/sh\n"
+      "trap 'exit 0' TERM INT\n"
+      "sleep 30\n");
+  const auto kubectl_path = PrependPath(kubectl_dir);
+  const auto normalized_config_path = std::filesystem::absolute(config_path).lexically_normal().string();
+  const auto log_path = std::filesystem::temp_directory_path() / "kubeforward" /
+                        ("logs-" + std::to_string(std::hash<std::string>{}(normalized_config_path))) /
+                        ("dev-api-" + std::to_string(local_port) + ".log");
+  std::filesystem::remove(log_path);
+
+  ScopedEnvVar kubectl_bin("PATH", kubectl_path.c_str());
+  ScopedEnvVar timeout("KUBEFORWARD_STARTUP_TIMEOUT_MS", "3000");
+  CliResult result;
+  std::thread command([&]() {
+    result = RunAndCapture({"kubeforward", "up", "--file", config_path.string(), "--env", "dev", "--daemon"});
+  });
+  ScopedCleanup cleanup([&]() {
+    if (command.joinable()) {
+      command.join();
+    }
+    StopSessionPidsFromState(state_file.path());
+  });
+
+  for (int waited_ms = 0; waited_ms < 5000 && !std::filesystem::exists(log_path); waited_ms += 10) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  REQUIRE(std::filesystem::exists(log_path));
+
+  ScopedListeningSocket listener("127.0.0.1", local_port);
+  if (!listener.ok()) {
+    if (command.joinable()) {
+      command.join();
+    }
+    StopSessionPidsFromState(state_file.path());
+    cleanup.Dismiss();
+    SUCCEED("test sandbox refused the local listener bind");
+    return;
+  }
+
+  INFO(result.err);
+  INFO("log_path=" << log_path.string() << " log_exists=" << std::filesystem::exists(log_path));
+  if (command.joinable()) {
+    command.join();
+  }
+  REQUIRE(result.exit_code == 0);
+  CHECK_FALSE(listener.AcceptPending());
+
+  StopSessionPidsFromState(state_file.path());
+  cleanup.Dismiss();
 }
 
 TEST_CASE("up supports verbose output", "[cli]") {
