@@ -22,6 +22,7 @@ environments:
     extends: string?             # optional parent env for DTAPS reuse
     description: string?
     kubeconfig/context/namespace/bindAddress/labels: overrides
+    # context here is deprecated; prefer resource.context below.
     guards:
       allowProduction: bool?     # explicit opt-in for prod usage
     forwards:
@@ -29,6 +30,7 @@ environments:
         resource:
           kind: enum[pod, deployment, service, statefulset]
           name: string                      # required concrete target name
+          context: string?                  # overrides env/default kubectl context
           namespace: string?                # overrides env/default namespace
         ports:
           - local: int (required, 1-65535)
@@ -47,8 +49,9 @@ environments:
 ## Resolution & Overrides
 1. `defaults` apply to every environment unless explicitly overridden.
 2. `extends` performs a shallow merge (metadata excluded). Lists are replaced, not merged, to keep order deterministic.
-3. Namespace resolution order: port-forward namespace → environment namespace → defaults namespace → error if unset.
-4. Local port collisions are forbidden post-merge. When duplicates appear, validation fails with both forward names and env.
+3. Context resolution order: `resource.context` → environment/default `context` → no `--context` flag. Environment/default context remains supported as a deprecated fallback for existing configs.
+4. Namespace resolution order: port-forward namespace → environment namespace → defaults namespace → error if unset.
+5. Local port collisions are forbidden post-merge. When duplicates appear, validation fails with both forward names and env.
 
 ## Validation Rules
 - Unknown keys anywhere cause failure; no silent drops.

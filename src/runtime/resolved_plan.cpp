@@ -70,6 +70,7 @@ std::vector<ResolvedForward> ResolveForwards(const std::string& env_name,
     forward.health_check = source.health_check;
     forward.env = source.env;
     forward.annotations = source.annotations;
+    forward.context = source.resource.context.has_value() ? source.resource.context : settings.context;
 
     const std::string namespace_name = source.resource.namespace_override.has_value()
                                            ? *source.resource.namespace_override

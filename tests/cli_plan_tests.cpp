@@ -394,6 +394,15 @@ int FindAvailableLoopbackPort() {
   return RandomLocalPort();
 }
 
+bool ContainsAdjacentArgs(const std::vector<std::string>& argv, const std::string& flag, const std::string& value) {
+  for (size_t i = 0; i + 1 < argv.size(); ++i) {
+    if (argv[i] == flag && argv[i + 1] == value) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool CanConnectTcpPort(int port, const std::string& bind_address = "127.0.0.1") {
   const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
   if (fd < 0) {
@@ -525,6 +534,20 @@ TEST_CASE("up supports daemon mode and explicit environment", "[cli]") {
   REQUIRE(result.exit_code == 0);
   CHECK(result.out.find("env: dev") != std::string::npos);
   CHECK(result.out.find("mode: daemon") != std::string::npos);
+}
+
+TEST_CASE("up uses environment context as default and resource context as override", "[cli]") {
+  ScopedEnvVar noop_runner("KUBEFORWARD_USE_NOOP_RUNNER", "1");
+  ScopedStateFile state_file;
+  const auto result = RunAndCapture({"kubeforward", "up", "--file", Fixture("resource_contexts.yaml"), "--env", "dev"});
+
+  REQUIRE(result.exit_code == 0);
+  const auto state = kubeforward::runtime::LoadState(state_file.path());
+  REQUIRE(state.ok());
+  REQUIRE(state.state.sessions.size() == 1);
+  REQUIRE(state.state.sessions.at(0).forwards.size() == 2);
+  CHECK(ContainsAdjacentArgs(state.state.sessions.at(0).forwards.at(0).argv, "--context", "env-cluster"));
+  CHECK(ContainsAdjacentArgs(state.state.sessions.at(0).forwards.at(1).argv, "--context", "resource-cluster"));
 }
 
 TEST_CASE("up daemon fails when kubectl exits before opening the local port", "[cli]") {

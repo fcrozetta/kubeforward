@@ -95,3 +95,22 @@ TEST_CASE("resolved plan rejects inherited non-detached production forwards", "[
   REQUIRE_FALSE(plan_result.errors.empty());
   CHECK(plan_result.errors.front().message == "production environment requires detach=true for every forward");
 }
+
+TEST_CASE("resolved plan applies environment context and resource overrides", "[runtime]") {
+  const auto load_result = kubeforward::config::LoadConfigFromFile(Fixture("resource_contexts.yaml"));
+  REQUIRE(load_result.ok());
+  REQUIRE(load_result.config.has_value());
+
+  const auto plan_result = kubeforward::runtime::BuildResolvedPlan(
+      *load_result.config, Fixture("resource_contexts.yaml"), std::optional<std::string>{"dev"});
+  REQUIRE(plan_result.ok());
+  REQUIRE(plan_result.plan.has_value());
+  REQUIRE(plan_result.plan->environments.size() == 1);
+
+  const auto& env = plan_result.plan->environments.at(0);
+  REQUIRE(env.forwards.size() == 2);
+  REQUIRE(env.forwards.at(0).context.has_value());
+  CHECK(env.forwards.at(0).context.value() == "env-cluster");
+  REQUIRE(env.forwards.at(1).context.has_value());
+  CHECK(env.forwards.at(1).context.value() == "resource-cluster");
+}

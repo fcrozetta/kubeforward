@@ -332,7 +332,7 @@ ResourceSelector ParseResourceSelector(const YAML::Node& node, const std::string
     return selector;
   }
   EnsureAllowedKeys(node, context,
-                    MakeSet(std::vector<std::string>{"kind", "name", "namespace"}), errors);
+                    MakeSet(std::vector<std::string>{"kind", "name", "context", "namespace"}), errors);
   if (const auto kind_value = ReadOptionalString(node["kind"], context + ".kind", errors)) {
     selector.kind = ParseResourceKind(*kind_value, context + ".kind", errors);
   } else {
@@ -345,6 +345,9 @@ ResourceSelector ParseResourceSelector(const YAML::Node& node, const std::string
   }
   if (!selector.name.has_value()) {
     AddError(errors, context + ".name", "resource name is required");
+  }
+  if (const auto ctx = ReadOptionalString(node["context"], context + ".context", errors)) {
+    selector.context = ctx;
   }
   if (const auto ns = ReadOptionalString(node["namespace"], context + ".namespace", errors)) {
     selector.namespace_override = ns;
