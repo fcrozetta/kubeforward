@@ -1,0 +1,26 @@
+version: 1
+metadata:
+  project: demo-project
+defaults:
+  namespace: default
+  bindAddress: 127.0.0.1
+environments:
+  dev:
+    description: Multi-cluster development environment
+    context: env-cluster
+    forwards:
+      - name: api
+        resource:
+          kind: deployment
+          name: api
+        ports:
+          - local: 7000
+            remote: 80
+      - name: worker
+        resource:
+          kind: service
+          name: worker
+          context: resource-cluster
+        ports:
+          - local: 7001
+            remote: 80

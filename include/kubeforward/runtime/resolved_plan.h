@@ -15,6 +15,7 @@ struct ResolvedForward {
   std::string name;
   config::ResourceSelector resource;
   std::vector<config::PortMapping> ports;
+  std::optional<std::string> context;
   std::string namespace_name;
   bool detach = false;
   config::RestartPolicy restart_policy = config::RestartPolicy::kFailFast;

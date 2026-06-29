@@ -64,6 +64,7 @@ Notes:
 - Unknown environments fail fast.
 - Schema errors are reported with contextual paths.
 - Duplicate local ports within an environment are rejected.
+- Set `resource.context` for per-forward Kubernetes contexts; environment/default `context` still works as a deprecated fallback and is overridden by `resource.context`.
 - `up` waits until each local TCP port has been bound before considering startup successful.
 - `up` without `--daemon` then stays attached in the foreground until a forward exits or the user stops it.
 

@@ -125,3 +125,17 @@ TEST_CASE("config rejects selector-based resources", "[config]") {
   }
   REQUIRE(saw_selector_error);
 }
+
+TEST_CASE("config accepts resource-level context", "[config]") {
+  const auto result = kubeforward::config::LoadConfigFromFile(Fixture("resource_contexts.yaml"));
+  REQUIRE(result.ok());
+  REQUIRE(result.config);
+
+  const auto& dev = result.config->environments.at("dev");
+  REQUIRE(dev.settings.context.has_value());
+  CHECK(dev.settings.context.value() == "env-cluster");
+  REQUIRE(dev.forwards.size() == 2);
+  CHECK_FALSE(dev.forwards.at(0).resource.context.has_value());
+  REQUIRE(dev.forwards.at(1).resource.context.has_value());
+  CHECK(dev.forwards.at(1).resource.context.value() == "resource-cluster");
+}

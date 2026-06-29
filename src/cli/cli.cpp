@@ -196,6 +196,7 @@ void PrintPlanVerbose(const std::string& name, const kubeforward::config::Enviro
     std::cout << "      resource:\n";
     std::cout << "        kind: " << ResourceKindToString(forward.resource.kind) << "\n";
     std::cout << "        name: " << OptionalValueOr(forward.resource.name) << "\n";
+    std::cout << "        context: " << OptionalValueOr(forward.resource.context) << "\n";
     std::cout << "        namespace: " << OptionalValueOr(forward.resource.namespace_override) << "\n";
     std::cout << "      annotations:\n";
     std::cout << "        detach: " << (forward.detach ? "true" : "false") << "\n";
@@ -259,6 +260,7 @@ void PrintPlanVerbose(const kubeforward::config::EnvironmentDefinition& source_e
     std::cout << "      resource:\n";
     std::cout << "        kind: " << ResourceKindToString(forward.resource.kind) << "\n";
     std::cout << "        name: " << OptionalValueOr(forward.resource.name) << "\n";
+    std::cout << "        context: " << OptionalValueOr(forward.context) << "\n";
     std::cout << "        namespace: " << OptionalValueOr(forward.resource.namespace_override) << "\n";
     std::cout << "      annotations:\n";
     std::cout << "        detach: " << (forward.detach ? "true" : "false") << "\n";
@@ -606,9 +608,9 @@ bool BuildKubectlPortForwardArgv(const kubeforward::runtime::ResolvedEnvironment
   argv = {KubectlBinary(), "port-forward", target, std::to_string(port.local_port) + ":" + std::to_string(port.remote_port)};
   argv.push_back("--namespace");
   argv.push_back(forward.namespace_name);
-  if (env.settings.context.has_value() && !env.settings.context->empty()) {
+  if (forward.context.has_value() && !forward.context->empty()) {
     argv.push_back("--context");
-    argv.push_back(*env.settings.context);
+    argv.push_back(*forward.context);
   }
   if (env.settings.kubeconfig.has_value() && !env.settings.kubeconfig->empty()) {
     argv.push_back("--kubeconfig");

@@ -34,6 +34,10 @@ struct Metadata {
 };
 
 /// Default target settings inherited by environments and forwards.
+///
+/// `context` is retained as a deprecated fallback. Prefer setting
+/// ResourceSelector::context on each forward resource when configs need to span
+/// multiple Kubernetes contexts.
 struct TargetDefaults {
   std::optional<std::string> kubeconfig;
   std::optional<std::string> context;
@@ -51,6 +55,7 @@ struct EnvironmentGuards {
 struct ResourceSelector {
   ResourceKind kind = ResourceKind::kPod;
   std::optional<std::string> name;
+  std::optional<std::string> context;
   std::optional<std::string> namespace_override;
 };
 
