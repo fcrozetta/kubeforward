@@ -6,7 +6,7 @@
 3. **CodeLLDB** (vadimcn.vscode-lldb) – debug adapter that works on modern macOS (lldb-mi is deprecated).
 
 ## Environment prerequisites
-- Install vcpkg and set `VCPKG_ROOT` globally (e.g., in `~/.zprofile`). Kubeforward assumes `/Users/fcrozetta/projects/vcpkg`; adjust `.vscode/settings.json` + `launch.json` if yours differs.
+- Install vcpkg and set `VCPKG_ROOT` globally (e.g., in `~/.zprofile`). The workspace config reads `VCPKG_ROOT` from the environment, so vcpkg can live anywhere.
 - Ensure CMake and a C++20 toolchain are on PATH (`brew install cmake llvm` or Xcode CLT).
 
 ## Workspace configuration
